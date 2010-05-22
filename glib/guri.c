@@ -22,19 +22,23 @@
  * URI, then the results may be surprising. (In particular, an invalid
  * absolute URI will likely be interpreted as being a valid relative
  * URI.)
+ *
+ * Note that although technically the path component is always present
+ * in a URI, g_uri_split() will set @path to %NULL rather than "" if
+ * it is empty.
  */
 void
-g_uri_split (const char  *uri_string,
-	     char       **scheme,
-	     char       **userinfo,
-	     char       **host,
-	     char       **port,
-	     char       **path,
-	     char       **query,
-	     char       **fragment)
+g_uri_split (const gchar  *uri_string,
+	     gchar       **scheme,
+	     gchar       **userinfo,
+	     gchar       **host,
+	     gchar       **port,
+	     gchar       **path,
+	     gchar       **query,
+	     gchar       **fragment)
 {
-  const char *end, *hash, *colon, *at, *path, *question;
-  const char *p, *hostend;
+  const gchar *end, *hash, *colon, *at, *path, *question;
+  const gchar *p, *hostend;
   int len;
 
   if (scheme)
@@ -52,21 +56,10 @@ g_uri_split (const char  *uri_string,
   if (fragment)
     *fragment = NULL;
 
-  /* Find fragment. */
-  hash = strchr (uri_string, '#');
-  if (hash)
-    {
-      if (fragment)
-	*fragment = g_strdup (hash + 1);
-      end = hash;
-    }
-  else
-    end = uri_string + strlen (uri_string);
-
   /* Find scheme: initial [a-z+.-]* substring until ":" */
   p = uri_string;
-  while (p < end && (g_ascii_isalnum (*p) ||
-		     *p == '.' || *p == '+' || *p == '-'))
+  while (*p && (g_ascii_isalnum (*p) ||
+		*p == '.' || *p == '+' || *p == '-'))
     p++;
 
   if (p > uri_string && *p == ':')
@@ -84,8 +77,6 @@ g_uri_split (const char  *uri_string,
       p += 2;
 
       path = p + strcspn (p, "/?#");
-      if (path > end)
-	path = end;
       at = strchr (p, '@');
       if (at && at < path)
 	{
@@ -125,6 +116,14 @@ g_uri_split (const char  *uri_string,
       p = path;
     }
 
+  /* Find fragment. */
+  end = p + strcspn (p, "#");
+  if (*end == '#')
+    {
+      if (fragment)
+	*fragment = g_strdup (end + 1);
+    }
+
   /* Find query */
   question = memchr (p, '?', end - p);
   if (question)
@@ -141,11 +140,137 @@ g_uri_split (const char  *uri_string,
     }
 }
 
-static char *
-uri_normalize (const char      *segment,
+/**
+ * g_uri_parse_params:
+ * @params: a string containing "attribute=value" parameters
+ * @length: the length of @params, or -1 if it is NUL-terminated
+ * @separator: the separator character between parameters.
+ *   (usually ';', but sometimes '&')
+ * @case_insentitive: whether to match parameter names case-insensitively
+ *
+ * Many URI schemes include one or more attribute/value pairs
+ * as part of the URI value. This method can be used to parse them
+ * into a hash table.
+ *
+ * Return value: (element-type utf8 utf8): a hash table of
+ * attribute/value pairs. Both names and values will fully-decoded.
+ * If @params cannot be parsed properly, %NULL is returned.
+ */
+GHashTable *
+g_uri_parse_params (const gchar *params,
+		    gssize       length,
+		    gchar        separator,
+		    gboolean     case_insensitive)
+{
+  GHashTable *hash;
+  const char *end, attr, *attr_end, *value, *value_end;
+
+  if (case_insensitive)
+    {
+      hash = g_hash_table_new_full (g_str_ascii_case_hash,
+				    g_str_ascii_case_equal,
+				    g_free, g_free);
+    }
+  else
+    {
+      hash = g_hash_table_new_full (g_str_hash, g_str_equal,
+				    g_free, g_free);
+    }
+
+  if (length == -1)
+    end = params + strlen (params);
+  else
+    end = params + length;
+
+  attr = params;
+  while (attr < end)
+    {
+      value_end = memchr (attr, separator, end - attr);
+      if (!value_end)
+	value_end = end;
+
+      attr_end = memchr (attr, '=', value_end - attr);
+      if (!attr_end)
+	{
+	  g_hash_table_destroy (hash);
+	  return NULL;
+	}
+
+      value = attr_end + 1;
+      g_hash_table_insert (hash,
+			   /* FIXME: decode */
+			   g_strndup (attr, attr_end - attr),
+			   g_strndup (value, value_end - value));
+      attr = value_end + 1;
+    }
+
+  return hash;
+}
+
+static gchar *
+uri_normalize (const gchar      *segment,
 	       GUriParseFlags   flags,
 	       GError         **error)
 {
+}
+
+/* Does the "Remove Dot Segments" algorithm from section 5.2.4 of RFC
+ * 3986. @path is assumed to start with '/', and is modified in place.
+ */
+static void
+remove_dot_segments (gchar *path)
+{
+  gchar *p, *q;
+
+  /* Remove "./" where "." is a complete segment. */
+  for (p = path + 1; *p; )
+    {
+      if (*(p - 1) == '/' &&
+	  *p == '.' && *(p + 1) == '/')
+	memmove (p, p + 2, strlen (p + 2) + 1);
+      else
+	p++;
+    }
+  /* Remove "." at end. */
+  if (p > path + 2 &&
+      *(p - 1) == '.' && *(p - 2) == '/')
+    *(p - 1) = '\0';
+
+  /* Remove "<segment>/../" where <segment> != ".." */
+  for (p = path + 1; *p; )
+    {
+      if (!strncmp (p, "../", 3))
+	{
+	  p += 3;
+	  continue;
+	}
+      q = strchr (p + 1, '/');
+      if (!q)
+	break;
+      if (strncmp (q, "/../", 4) != 0)
+	{
+	  p = q + 1;
+	  continue;
+	}
+      memmove (p, q + 4, strlen (q + 4) + 1);
+      p = path + 1;
+    }
+  /* Remove "<segment>/.." at end where <segment> != ".." */
+  q = strrchr (path, '/');
+  if (q && !strcmp (q, "/.."))
+    {
+      p = q - 1;
+      while (p > path && *p != '/')
+	p--;
+      if (strncmp (p, "/../", 4) != 0)
+	*(p + 1) = 0;
+    }
+
+  /* Remove extraneous initial "/.."s */
+  while (!strncmp (path, "/../", 4))
+    memmove (path, path + 3, strlen (path) - 2);
+  if (!strcmp (path, "/.."))
+    path[1] = '\0';
 }
 
 /**
@@ -163,11 +288,11 @@ uri_normalize (const char      *segment,
  * Return value: the parsed hostname or IP address, or %NULL on error.
  */
 char *
-g_uri_parse_host (const char      *raw_host,
+g_uri_parse_host (const gchar      *raw_host,
 		  GUriParseFlags   flags,
 		  GError         **error)
 {
-  char *decoded, *addr, *ace;
+  gchar *decoded, *addr, *ace;
 
   if (*raw_host == '[')
     {
@@ -242,13 +367,34 @@ g_uri_parse_host (const char      *raw_host,
   return ace;
 }
 
+/**
+ * g_uri_new_relative:
+ * @base_uri: (allow-none): a base URI
+ * @uri_string: a string representing a relative or absolute URI
+ * @flags: flags describing how to parse @uri_string
+ * @error: #GError for error reporting, or %NULL to ignore.
+ *
+ * Parses @uri_string according to @flags and, if it is a relative
+ * URI, merges it with @base_uri. If the result is not a valid
+ * absolute URI, it will be discarded, and an error returned.
+ *
+ * Return value: a new #GUri.
+ */
 GUri *
-g_uri_new (const char      *uri_string,
-	   GUriParseFlags   flags,
-	   GError         **error)
+g_uri_new_relative (GUri            *base_uri,
+		    const gchar      *uri_string,
+		    GUriParseFlags   flags,
+		    GError         **error)
 {
   GUri *guri;
-  char *copy = NULL;
+  gchar *copy = NULL;
+
+  if (base_uri && !base_uri->scheme)
+    {
+      g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+			   _("Base URI is not absolute"));
+      return NULL;
+    }
 
   if (!(flags & G_URI_PARSE_STRICT))
     {
@@ -262,8 +408,8 @@ g_uri_new (const char      *uri_string,
       len = strcspn (uri_string, "\t\n\r");
       if (uri_string[len])
 	{
-	  const char *src;
-	  char *dst;
+	  const gchar *src;
+	  gchar *dst;
 
 	  copy = g_malloc (strlen (uri_string) + 1);
 	  for (src = uri_string, dst = copy; *src; src++)
@@ -294,9 +440,11 @@ g_uri_new (const char      *uri_string,
 
   guri = g_slice_new0 (GUri);
   g_uri_split (uri_string,
-	       &guri->raw_scheme, &guri->raw_userinfo,
+	       &guri->scheme, &guri->raw_userinfo,
 	       &guri->raw_host, &guri->raw_port,
 	       &guri->raw_path, &guri->raw_query, &guri->raw_fragment);
+  if (copy)
+    g_free (copy);
 
   if (guri->raw_userinfo)
     {
@@ -314,7 +462,7 @@ g_uri_new (const char      *uri_string,
 
   if (guri->raw_port)
     {
-      char *end;
+      gchar *end;
 
       guri->port = strtoul (guri->raw_port, &end, 10);
       if (*end)
@@ -322,19 +470,13 @@ g_uri_new (const char      *uri_string,
 	  g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
 		       _("Could not parse port '%s' in URI"),
 		       guri->raw_port);
-	  g_uri_free (guri);
-	  if (copy)
-	    g_free (copy);
-	  return NULL;
+	  goto fail;
 	}
     }
 
-  if (guri->raw_path)
-    {
-      guri->path = uri_normalize (guri->raw_path, flags, error);
-      if (!guri->path)
-	goto fail;
-    }
+  guri->path = uri_normalize (guri->raw_path, flags, error);
+  if (!guri->path)
+    goto fail;
 
   if (guri->raw_query)
     {
@@ -350,306 +492,83 @@ g_uri_new (const char      *uri_string,
 	goto fail;
     }
 
-  if (copy)
-    g_free (copy);
-  return guri;
+  if (!guri->scheme && !base_uri)
+    {
+      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+		   _("Could not parse '%s' as absolute URI"),
+		   uri_string);
+      goto fail;
+    }
+
+  if (base_uri)
+    {
+      /* This is section 5.2.2 of RFC 3986, except that we're doing
+       * it in place in @guri rather than copying from R to T.
+       */
+      if (guri->scheme)
+	remove_dot_segments (guri->path);
+      else
+	{
+	  if (guri->host)
+	    remove_dot_segments (guri->path);
+	  else
+	    {
+	      if (!*guri->path)
+		{
+		  g_free (guri->path);
+		  guri->path = g_strdup (base_uri->path);
+		  g_free (guri->raw_path);
+		  guri->raw_path = NULL;
+		  if (!guri->query)
+		    guri->query = g_strdup (base_uri->query);
+		}
+	      else
+		{
+		  if (*guri->path != '/')
+		    remove_dot_segments (guri->path);
+		  else
+		    {
+		      gchar *newpath, *last;
+
+		      last = strrchr (base_uri->path, '/');
+		      if (last)
+			{
+			  newpath = g_strdup_printf ("%.*s/%s",
+						     (int)(last - base_uri->path),
+						     base_uri->path,
+						     guri->path);
+			}
+		      else
+			newpath = g_strdup_printf ("/%s", guri->path);
+
+		      g_free (guri->path);
+		      guri->path = newpath;
+		      g_free (guri->raw_path);
+		      guri->raw_path = NULL;
+
+		      remove_dot_segments (guri->path);
+		    }
+		}
+
+	      guri->userinfo = g_strdup (base_uri->userinfo);
+	      guri->host = g_strdup (base_uri->host);
+	      guri->port = base_uri->port;
+	    }
+	}
+    }
 
  fail:
-  if (copy)
-    g_free (copy);
   g_uri_free (guri);
   return NULL;
 }
 
 GUri *
-g_uri_new_relative (GUri            *base_uri,
-		    const char      *uri_string,
-		    GUriParseFlags   flags,
-		    GError         **error)
+g_uri_new (const gchar     *uri_string,
+	   GUriParseFlags   flags,
+	   GError         **error)
 {
-  GUri *uri;
-
+  return g_uri_new (NULL, uri_string, flags, error);
 }
-
-/**
- * soup_uri_new_with_base:
- * @base: a base URI
- * @uri_string: the URI
- *
- * Parses @uri_string relative to @base.
- *
- * Return value: a parsed #SoupURI.
- **/
-SoupURI *
-soup_uri_new_with_base (SoupURI *base, const char *uri_string)
-{
-  SoupURI *uri;
-  const char *end, *hash, *colon, *at, *path, *question;
-  const char *p, *hostend;
-  gboolean remove_dot_segments = TRUE;
-  int len;
-
-  /* First some cleanup steps (which are supposed to all be no-ops,
-   * but...). Skip initial whitespace, strip out internal tabs and
-   * line breaks, and ignore trailing whitespace.
-   */
-  while (g_ascii_isspace (*uri_string))
-    uri_string++;
-
-  len = strcspn (uri_string, "\t\n\r");
-  if (uri_string[len]) {
-    char *clean = g_malloc (strlen (uri_string) + 1), *d;
-    const char *s;
-
-    for (s = uri_string, d = clean; *s; s++) {
-      if (*s != '\t' && *s != '\n' && *s != '\r')
-	*d++ = *s;
-    }
-    *d = '\0';
-
-    uri = soup_uri_new_with_base (base, clean);
-    g_free (clean);
-    return uri;
-  }
-  end = uri_string + len;
-  while (end > uri_string && g_ascii_isspace (end[-1]))
-    end--;
-
-  uri = g_slice_new0 (SoupURI);
-
-  /* Find fragment. */
-  hash = strchr (uri_string, '#');
-  if (hash) {
-    uri->fragment = uri_normalized_copy (hash + 1, end - hash + 1,
-					 NULL, TRUE);
-    end = hash;
-  }
-
-  /* Find scheme: initial [a-z+.-]* substring until ":" */
-  p = uri_string;
-  while (p < end && (g_ascii_isalnum (*p) ||
-		     *p == '.' || *p == '+' || *p == '-'))
-    p++;
-
-  if (p > uri_string && *p == ':') {
-    uri->scheme = soup_uri_parse_scheme (uri_string, p - uri_string);
-    uri_string = p + 1;
-  }
-
-  if (uri_string == end && !base && !uri->fragment)
-    return uri;
-
-  /* Check for authority */
-  if (strncmp (uri_string, "//", 2) == 0) {
-    uri_string += 2;
-
-    path = uri_string + strcspn (uri_string, "/?#");
-    if (path > end)
-      path = end;
-    at = strchr (uri_string, '@');
-    if (at && at < path) {
-      colon = strchr (uri_string, ':');
-      if (colon && colon < at) {
-	uri->password = uri_decoded_copy (colon + 1,
-					  at - colon - 1,
-					  TRUE);
-      } else {
-	uri->password = NULL;
-	colon = at;
-      }
-
-      uri->user = uri_decoded_copy (uri_string,
-				    colon - uri_string,
-				    TRUE);
-      uri_string = at + 1;
-    } else
-      uri->user = uri->password = NULL;
-
-    /* Find host and port. */
-    if (*uri_string == '[') {
-      uri_string++;
-      hostend = strchr (uri_string, ']');
-      if (!hostend || hostend > path) {
-	soup_uri_free (uri);
-	return NULL;
-      }
-      if (*(hostend + 1) == ':')
-	colon = hostend + 1;
-      else
-	colon = NULL;
-    } else {
-      colon = memchr (uri_string, ':', path - uri_string);
-      hostend = colon ? colon : path;
-    }
-
-    uri->host = uri_decoded_copy (uri_string, hostend - uri_string,
-				  TRUE);
-
-    if (colon && colon != path - 1) {
-      char *portend;
-      uri->port = strtoul (colon + 1, &portend, 10);
-      if (portend != (char *)path) {
-	soup_uri_free (uri);
-	return NULL;
-      }
-    }
-
-    uri_string = path;
-  }
-
-  /* Find query */
-  question = memchr (uri_string, '?', end - uri_string);
-  if (question) {
-    uri->query = uri_normalized_copy (question + 1,
-				      end - (question + 1),
-				      NULL, TRUE);
-    end = question;
-  }
-
-  if (end != uri_string) {
-    uri->path = uri_normalized_copy (uri_string, end - uri_string,
-				     NULL, TRUE);
-  }
-
-  /* Apply base URI. This is spelled out in RFC 3986. */
-  if (base && !uri->scheme && uri->host)
-    uri->scheme = base->scheme;
-  else if (base && !uri->scheme) {
-    uri->scheme = base->scheme;
-    uri->user = g_strdup (base->user);
-    uri->password = g_strdup (base->password);
-    uri->host = g_strdup (base->host);
-    uri->port = base->port;
-
-    if (!uri->path) {
-      uri->path = g_strdup (base->path);
-      if (!uri->query)
-	uri->query = g_strdup (base->query);
-      remove_dot_segments = FALSE;
-    } else if (*uri->path != '/') {
-      char *newpath, *last;
-
-      last = strrchr (base->path, '/');
-      if (last) {
-	newpath = g_strdup_printf ("%.*s/%s",
-				   (int)(last - base->path),
-				   base->path,
-				   uri->path);
-      } else
-	newpath = g_strdup_printf ("/%s", uri->path);
-
-      g_free (uri->path);
-      uri->path = newpath;
-    }
-  }
-
-  if (remove_dot_segments && uri->path && *uri->path) {
-    char *p, *q;
-
-    /* Remove "./" where "." is a complete segment. */
-    for (p = uri->path + 1; *p; ) {
-      if (*(p - 1) == '/' &&
-	  *p == '.' && *(p + 1) == '/')
-	memmove (p, p + 2, strlen (p + 2) + 1);
-      else
-	p++;
-    }
-    /* Remove "." at end. */
-    if (p > uri->path + 2 &&
-	*(p - 1) == '.' && *(p - 2) == '/')
-      *(p - 1) = '\0';
-
-    /* Remove "<segment>/../" where <segment> != ".." */
-    for (p = uri->path + 1; *p; ) {
-      if (!strncmp (p, "../", 3)) {
-	p += 3;
-	continue;
-      }
-      q = strchr (p + 1, '/');
-      if (!q)
-	break;
-      if (strncmp (q, "/../", 4) != 0) {
-	p = q + 1;
-	continue;
-      }
-      memmove (p, q + 4, strlen (q + 4) + 1);
-      p = uri->path + 1;
-    }
-    /* Remove "<segment>/.." at end where <segment> != ".." */
-    q = strrchr (uri->path, '/');
-    if (q && !strcmp (q, "/..")) {
-      p = q - 1;
-      while (p > uri->path && *p != '/')
-	p--;
-      if (strncmp (p, "/../", 4) != 0)
-	*(p + 1) = 0;
-    }
-
-    /* Remove extraneous initial "/.."s */
-    while (!strncmp (uri->path, "/../", 4))
-      memmove (uri->path, uri->path + 3, strlen (uri->path) - 2);
-    if (!strcmp (uri->path, "/.."))
-      uri->path[1] = '\0';
-  }
-
-  /* HTTP-specific stuff */
-  if (uri->scheme == SOUP_URI_SCHEME_HTTP ||
-      uri->scheme == SOUP_URI_SCHEME_HTTPS) {
-    if (!uri->path)
-      uri->path = g_strdup ("/");
-    if (!SOUP_URI_VALID_FOR_HTTP (uri)) {
-      soup_uri_free (uri);
-      return NULL;
-    }
-  }
-
-  if (uri->scheme == SOUP_URI_SCHEME_FTP) {
-    if (!uri->host) {
-      soup_uri_free (uri);
-      return NULL;
-    }
-  }
-
-  if (!uri->port)
-    uri->port = soup_scheme_default_port (uri->scheme);
-  if (!uri->path)
-    uri->path = g_strdup ("");
-
-  return uri;
-}
-
-/**
- * soup_uri_new:
- * @uri_string: a URI
- *
- * Parses an absolute URI.
- *
- * You can also pass %NULL for @uri_string if you want to get back an
- * "empty" #SoupURI that you can fill in by hand. (You will need to
- * call at least soup_uri_set_scheme() and soup_uri_set_path(), since
- * those fields are required.)
- *
- * Return value: a #SoupURI, or %NULL.
- **/
-SoupURI *
-soup_uri_new (const char *uri_string)
-{
-  SoupURI *uri;
-
-  if (!uri_string)
-    return g_slice_new0 (SoupURI);
-
-  uri = soup_uri_new_with_base (NULL, uri_string);
-  if (!uri)
-    return NULL;
-  if (!uri->scheme) {
-    soup_uri_free (uri);
-    return NULL;
-  }
-
-  return uri;
-}
-
 
 /**
  * g_uri_to_string:
@@ -658,62 +577,63 @@ soup_uri_new (const char *uri_string)
  *
  * Returns a string representing @uri.
  *
- * If @just_path_and_query is %TRUE, this concatenates the path and query
- * together. That is, it constructs the string that would be needed in
- * the Request-Line of an HTTP request for @uri.
- *
  * Return value: a string representing @uri, which the caller must free.
  **/
-char *
-soup_uri_to_string (SoupURI *uri, gboolean just_path_and_query)
+gchar *
+g_uri_to_string (GUri              *uri,
+		 GUriToStringFlags  flags)		 
 {
   GString *str;
-  char *return_result;
 
   g_return_val_if_fail (uri != NULL, NULL);
 
-  /* IF YOU CHANGE ANYTHING IN THIS FUNCTION, RUN
-   * tests/uri-parsing AFTERWARD.
-   */
+  str = g_string_new (uri->scheme);
 
-  str = g_string_sized_new (20);
+  if (uri->host)
+    {
+      g_string_append (str, "//");
+      if (uri->userinfo)
+	{
+	  if (uri->raw_userinfo)
+	    g_string_append (str, uri->raw_userinfo);
+	  else
+	    append_uri_encoded (str, uri->userinfo, NULL);
+	  g_string_append_c (str, '@');
+	}
 
-  if (uri->scheme && !just_path_and_query)
-    g_string_append_printf (str, "%s:", uri->scheme);
-  if (uri->host && !just_path_and_query) {
-    g_string_append (str, "//");
-    if (uri->user) {
-      append_uri_encoded (str, uri->user, ":;@?/");
-      g_string_append_c (str, '@');
+      if (uri->raw_host)
+	g_string_append (str, uri->raw_host);
+      else
+	{
+	  if (strchr (uri->host, ':'))
+	    {
+	      g_string_append_c (str, '[');
+	      g_string_append (str, uri->host);
+	      g_string_append_c (str, ']');
+	    }
+	  else
+	    append_uri_encoded (str, uri->host, NULL);
+	}
+
+      if (uri->port > -1)
+	g_string_append_printf (str, ":%d", uri->port);
     }
-    if (strchr (uri->host, ':')) {
-      g_string_append_c (str, '[');
-      g_string_append (str, uri->host);
-      g_string_append_c (str, ']');
-    } else
-      append_uri_encoded (str, uri->host, ":/");
-    if (uri->port && uri->port != soup_scheme_default_port (uri->scheme))
-      g_string_append_printf (str, ":%d", uri->port);
-    if (!uri->path && (uri->query || uri->fragment))
-      g_string_append_c (str, '/');
-  }
 
-  if (uri->path && *uri->path)
+  if (uri->path)
     g_string_append (str, uri->path);
 
-  if (uri->query) {
-    g_string_append_c (str, '?');
-    g_string_append (str, uri->query);
-  }
-  if (uri->fragment && !just_path_and_query) {
-    g_string_append_c (str, '#');
-    g_string_append (str, uri->fragment);
-  }
+  if (uri->query)
+    {
+      g_string_append_c (str, '?');
+      g_string_append (str, uri->query);
+    }
+  if (uri->fragment)
+    {
+      g_string_append_c (str, '#');
+      g_string_append (str, uri->fragment);
+    }
 
-  return_result = str->str;
-  g_string_free (str, FALSE);
-
-  return return_result;
+  return g_string_free (str, FALSE);
 }
 
 /**
@@ -745,7 +665,7 @@ soup_uri_copy (SoupURI *uri)
 }
 
 static inline gboolean
-parts_equal (const char *one, const char *two, gboolean insensitive)
+parts_equal (const gchar *one, const gchar *two, gboolean insensitive)
 {
   if (!one && !two)
     return TRUE;
@@ -801,9 +721,9 @@ soup_uri_free (SoupURI *uri)
 }
 
 static void
-append_uri_encoded (GString *str, const char *in, const char *extra_enc_chars)
+append_uri_encoded (GString *str, const gchar *in, const gchar *extra_enc_chars)
 {
-  const unsigned char *s = (const unsigned char *)in;
+  const unsigned gchar *s = (const unsigned gchar *)in;
 
   while (*s) {
     if (soup_char_is_uri_percent_encoded (*s) ||
@@ -818,7 +738,7 @@ append_uri_encoded (GString *str, const char *in, const char *extra_enc_chars)
 /**
  * soup_uri_encode:
  * @part: a URI part
- * @escape_extra: additional reserved characters to escape (or %NULL)
+ * @escape_extra: additional reserved gcharacters to escape (or %NULL)
  *
  * This %<!-- -->-encodes the given URI part and returns the escaped
  * version in allocated memory, which the caller must free when it is
@@ -827,10 +747,10 @@ append_uri_encoded (GString *str, const char *in, const char *extra_enc_chars)
  * Return value: the encoded URI part
  **/
 char *
-soup_uri_encode (const char *part, const char *escape_extra)
+soup_uri_encode (const gchar *part, const gchar *escape_extra)
 {
   GString *str;
-  char *encoded;
+  gchar *encoded;
 
   str = g_string_new (NULL);
   append_uri_encoded (str, part, escape_extra);
@@ -843,13 +763,13 @@ soup_uri_encode (const char *part, const char *escape_extra)
 #define XDIGIT(c) ((c) <= '9' ? (c) - '0' : ((c) & 0x4F) - 'A' + 10)
 #define HEXCHAR(s) ((XDIGIT (s[1]) << 4) + XDIGIT (s[2]))
 
-static char *
-uri_decoded_copy (const char *part, int length, gboolean fixup)
+static gchar *
+uri_decoded_copy (const gchar *part, int length, gboolean fixup)
 {
-  unsigned char *s, *d;
-  char *decoded = g_strndup (part, length);
+  unsigned gchar *s, *d;
+  gchar *decoded = g_strndup (part, length);
 
-  s = d = (unsigned char *)decoded;
+  s = d = (unsigned gchar *)decoded;
   do {
     if (*s == '%') {
       if (!g_ascii_isxdigit (s[1]) ||
@@ -880,20 +800,20 @@ uri_decoded_copy (const char *part, int length, gboolean fixup)
  * code was encountered.
  */
 char *
-soup_uri_decode (const char *part)
+soup_uri_decode (const gchar *part)
 {
   return uri_decoded_copy (part, strlen (part), FALSE);
 }
 
-static char *
-uri_normalized_copy (const char *part, int length,
-		     const char *unescape_extra, gboolean fixup)
+static gchar *
+uri_normalized_copy (const gchar *part, int length,
+		     const gchar *unescape_extra, gboolean fixup)
 {
-  unsigned char *s, *d, c;
-  char *normalized = g_strndup (part, length);
+  unsigned gchar *s, *d, c;
+  gchar *normalized = g_strndup (part, length);
   gboolean need_fixup = FALSE;
 
-  s = d = (unsigned char *)normalized;
+  s = d = (unsigned gchar *)normalized;
   do {
     if (*s == '%') {
       if (!g_ascii_isxdigit (s[1]) ||
@@ -924,7 +844,7 @@ uri_normalized_copy (const char *part, int length,
   } while (*s++);
 
   if (fixup && need_fixup) {
-    char *tmp, *sp;
+    gchar *tmp, *sp;
     /* This code is lame, but so are people who put
      * unencoded spaces in URLs!
      */
@@ -943,12 +863,12 @@ uri_normalized_copy (const char *part, int length,
 /**
  * soup_uri_normalize:
  * @part: a URI part
- * @unescape_extra: reserved characters to unescape (or %NULL)
+ * @unescape_extra: reserved gcharacters to unescape (or %NULL)
  *
- * %<!-- -->-decodes any "unreserved" characters (or characters in
+ * %<!-- -->-decodes any "unreserved" gcharacters (or gcharacters in
  * @unescape_extra) in @part.
  *
- * "Unreserved" characters are those that are not allowed to be used
+ * "Unreserved" gcharacters are those that are not allowed to be used
  * for punctuation according to the URI spec. For example, letters are
  * unreserved, so soup_uri_normalize() will turn
  * <literal>http://example.com/foo/b%<!-- -->61r</literal> into
@@ -962,7 +882,7 @@ uri_normalized_copy (const char *part, int length,
  * code was encountered.
  */
 char *
-soup_uri_normalize (const char *part, const char *unescape_extra)
+soup_uri_normalize (const gchar *part, const gchar *unescape_extra)
 {
   return uri_normalized_copy (part, strlen (part), unescape_extra, FALSE);
 }
@@ -1012,7 +932,7 @@ soup_uri_uses_default_port (SoupURI *uri)
  *
  * Since: 2.32
  **/
-const char *
+const gchar *
 soup_uri_get_scheme (SoupURI *uri)
 {
   return uri->scheme;
@@ -1027,7 +947,7 @@ soup_uri_get_scheme (SoupURI *uri)
  * the default port for @scheme, if known.
  **/
 void
-soup_uri_set_scheme (SoupURI *uri, const char *scheme)
+soup_uri_set_scheme (SoupURI *uri, const gchar *scheme)
 {
   uri->scheme = soup_uri_parse_scheme (scheme, strlen (scheme));
   uri->port = soup_scheme_default_port (uri->scheme);
@@ -1043,7 +963,7 @@ soup_uri_set_scheme (SoupURI *uri, const char *scheme)
  *
  * Since: 2.32
  **/
-const char *
+const gchar *
 soup_uri_get_user (SoupURI *uri)
 {
   return uri->user;
@@ -1057,7 +977,7 @@ soup_uri_get_user (SoupURI *uri)
  * Sets @uri's user to @user.
  **/
 void
-soup_uri_set_user (SoupURI *uri, const char *user)
+soup_uri_set_user (SoupURI *uri, const gchar *user)
 {
   g_free (uri->user);
   uri->user = g_strdup (user);
@@ -1073,7 +993,7 @@ soup_uri_set_user (SoupURI *uri, const char *user)
  *
  * Since: 2.32
  **/
-const char *
+const gchar *
 soup_uri_get_password (SoupURI *uri)
 {
   return uri->password;
@@ -1087,7 +1007,7 @@ soup_uri_get_password (SoupURI *uri)
  * Sets @uri's password to @password.
  **/
 void
-soup_uri_set_password (SoupURI *uri, const char *password)
+soup_uri_set_password (SoupURI *uri, const gchar *password)
 {
   g_free (uri->password);
   uri->password = g_strdup (password);
@@ -1103,7 +1023,7 @@ soup_uri_set_password (SoupURI *uri, const char *password)
  *
  * Since: 2.32
  **/
-const char *
+const gchar *
 soup_uri_get_host (SoupURI *uri)
 {
   return uri->host;
@@ -1121,7 +1041,7 @@ soup_uri_get_host (SoupURI *uri)
  * converting @uri to a string.
  **/
 void
-soup_uri_set_host (SoupURI *uri, const char *host)
+soup_uri_set_host (SoupURI *uri, const gchar *host)
 {
   g_free (uri->host);
   uri->host = g_strdup (host);
@@ -1167,7 +1087,7 @@ soup_uri_set_port (SoupURI *uri, guint port)
  *
  * Since: 2.32
  **/
-const char *
+const gchar *
 soup_uri_get_path (SoupURI *uri)
 {
   return uri->path;
@@ -1181,7 +1101,7 @@ soup_uri_get_path (SoupURI *uri)
  * Sets @uri's path to @path.
  **/
 void
-soup_uri_set_path (SoupURI *uri, const char *path)
+soup_uri_set_path (SoupURI *uri, const gchar *path)
 {
   g_free (uri->path);
   uri->path = g_strdup (path);
@@ -1197,7 +1117,7 @@ soup_uri_set_path (SoupURI *uri, const char *path)
  *
  * Since: 2.32
  **/
-const char *
+const gchar *
 soup_uri_get_query (SoupURI *uri)
 {
   return uri->query;
@@ -1211,7 +1131,7 @@ soup_uri_get_query (SoupURI *uri)
  * Sets @uri's query to @query.
  **/
 void
-soup_uri_set_query (SoupURI *uri, const char *query)
+soup_uri_set_query (SoupURI *uri, const gchar *query)
 {
   g_free (uri->query);
   uri->query = g_strdup (query);
@@ -1245,7 +1165,7 @@ soup_uri_set_query_from_form (SoupURI *uri, GHashTable *form)
  **/
 void
 soup_uri_set_query_from_fields (SoupURI    *uri,
-				const char *first_field,
+				const gchar *first_field,
 				...)
 {
   va_list args;
@@ -1266,7 +1186,7 @@ soup_uri_set_query_from_fields (SoupURI    *uri,
  *
  * Since: 2.32
  **/
-const char *
+const gchar *
 soup_uri_get_fragment (SoupURI *uri)
 {
   return uri->fragment;
@@ -1280,7 +1200,7 @@ soup_uri_get_fragment (SoupURI *uri)
  * Sets @uri's fragment to @fragment.
  **/
 void
-soup_uri_set_fragment (SoupURI *uri, const char *fragment)
+soup_uri_set_fragment (SoupURI *uri, const gchar *fragment)
 {
   g_free (uri->fragment);
   uri->fragment = g_strdup (fragment);

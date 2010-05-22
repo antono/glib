@@ -1,5 +1,6 @@
 aaa/aaas (rfc3588):
 aaa://host[:port][;transport=tcp][;protocol=diameter]
+  technically violates 3986, since ";" could appear in authority
 
 acap (rfc2244): 
 acap://[user[;AUTH=mech]@]host[:port]/data
@@ -84,6 +85,7 @@ mailto:mailbox[?[header=value[;header=value]*]]
 msrp (rfc4975):
 msrp://authority[/id];tcp[;attr=value]*
 msrps://authority[/id];tcp[;attr=value]*
+  technically violates 3986, since ";" could appear in authority
 
 mtqp (rfc3887):
 mtqp://authority/track/id/secret
@@ -179,3 +181,24 @@ HTML5 rules:
  - re-encode query to the URL's encoding (from enclosing doc) and
    %-encode. replace unencodable chars with '?'
  - if fully-resolved URI uses authority, replace all \ with /
+
+
+gvfs and EUri both allow '@' in username
+EUri does "parameters", but seems unused
+hide_password in to_string
+CamelURL does hide_auth too
+CamelURL does params and uses them
+CamelURL special-cases file URLs on win32 (via g_filename_to/from_uri)
+
+
+http://www.freedesktop.org/wiki/Specifications/file-uri-spec says:
+  non-ASCII chars are %-encoded
+  URIs are in filesystem encoding, NOT UTF-8
+  accept "file:/path" for compat
+http://blogs.msdn.com/ie/archive/2006/12/06/file-uris-in-windows.aspx:
+  IE allows "file://" + windows path (eg, "file://D:\blah blah\bl%h")
+  file://// == file://
+  don't use %-encoding for non-ASCII, just use non-ASCII.
+    (http://en.wikipedia.org/wiki/File_URI_scheme contradicts this?)
+  IE allows "|" instead of ":" for drive separator, but very deprecated
+  MUST NOT use %-encoding where not required

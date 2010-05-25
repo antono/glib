@@ -15,17 +15,13 @@
  * low-level method that does not do any pre- or post-processing of
  * @uri_string, does not decode percent-encoded characters, does not
  * translate between URIs and IRIs, etc. It just splits @uri_string
- * into pieces at the appropriate punctuation characters, and returns
- * the pieces.
+ * into pieces at the appropriate punctuation characters (consuming
+ * some and outputting others), and returns the pieces. Components
+ * that are not present in @uri_string will be set to %NULL (but note
+ * that the path is always present, though it may be empty).
  *
- * This method always succeeds, though if @uri_string is not a valid
- * URI, then the results may be surprising. (In particular, an invalid
- * absolute URI will likely be interpreted as being a valid relative
- * URI.)
- *
- * Note that although technically the path component is always present
- * in a URI, g_uri_split() will set @path to %NULL rather than "" if
- * it is empty.
+ * This method always succeeds, but if you put garbage in, you'll get
+ * garbage out.
  */
 void
 g_uri_split (const gchar  *uri_string,
@@ -37,24 +33,9 @@ g_uri_split (const gchar  *uri_string,
 	     gchar       **query,
 	     gchar       **fragment)
 {
-  const gchar *end, *hash, *colon, *at, *path, *question;
+  const gchar *end, *hash, *colon, *at, *path, *semi, *question;
   const gchar *p, *hostend;
   int len;
-
-  if (scheme)
-    *scheme = NULL;
-  if (userinfo)
-    *userinfo = NULL;
-  if (host)
-    *host = NULL;
-  if (port)
-    *port = NULL;
-  if (path)
-    *path = NULL;
-  if (query)
-    *query = NULL;
-  if (fragment)
-    *fragment = NULL;
 
   /* Find scheme: initial [a-z+.-]* substring until ":" */
   p = uri_string;
@@ -65,11 +46,15 @@ g_uri_split (const gchar  *uri_string,
   if (p > uri_string && *p == ':')
     {
       if (scheme)
-	*scheme = g_ascii_strdown (uri_string, p - uri_string);
+	*scheme = g_strndup (uri_string, p - uri_string);
       p++;
     }
   else
-    p = uri_string;
+    {
+      if (scheme)
+	*scheme = NULL;
+      p = uri_string;
+    }
 
   /* Check for authority */
   if (strncmp (p, "//", 2) == 0)
@@ -77,12 +62,42 @@ g_uri_split (const gchar  *uri_string,
       p += 2;
 
       path = p + strcspn (p, "/?#");
-      at = strchr (p, '@');
-      if (at && at < path)
+      at = memchr (p, '@', path - p);
+      if (at)
 	{
+	  gchar *next_at;
+
+	  /* Any "@"s in the userinfo must be %-encoded, but people
+	   * get this wrong sometimes. Since "@"s in the hostname are
+	   * unlikely (and also wrong anyway), assume that if there
+	   * are extra "@"s, they belong in the userinfo.
+	   */
+	  do
+	    {
+	      next_at = memchr (at + 1, '@', path - (at + 1));
+	      if (next_at)
+		at = next_at;
+	    }
+	  while (next_at);
+
 	  if (userinfo)
-	    *userinfo = g_strndup (p, colon - p);
+	    *userinfo = g_strndup (p, at - p);
 	  p = at + 1;
+	}
+      else if (userinfo)
+	*userinfo = NULL;
+
+      semi = strchr (p, ';');
+      if (semi && semi < path)
+	{
+	  /* Technically, semicolons are allowed in the "host"
+	   * production, but no one ever does, and some schemes
+	   * mistakenly use semicolon as a delimiter marking the start
+	   * of the path. We have to check this after checking for
+	   * userinfo though, because that can definitely contain
+	   * semicolons.
+	   */
+	  path = semi;
 	}
 
       /* Find host and port. */
@@ -112,8 +127,19 @@ g_uri_split (const gchar  *uri_string,
 	  if (port)
 	    *port = g_strndup (colon + 1, path - (colon + 1));
 	}
+      else if (port)
+	*port = NULL;
 
       p = path;
+    }
+  else
+    {
+      if (userinfo)
+	*userinfo = NULL;
+      if (host)
+	*host = NULL;
+      if (port)
+	*port = NULL;
     }
 
   /* Find fragment. */
@@ -123,6 +149,8 @@ g_uri_split (const gchar  *uri_string,
       if (fragment)
 	*fragment = g_strdup (end + 1);
     }
+  else if (fragment)
+    *fragment = NULL;
 
   /* Find query */
   question = memchr (p, '?', end - p);
@@ -132,12 +160,11 @@ g_uri_split (const gchar  *uri_string,
 	*query = g_strndup (question + 1, end - (question + 1));
       end = question;
     }
+  else if (query)
+    *query = NULL;
 
-  if (end != p)
-    {
-      if (path)
-	*path = g_strndup (p, end - p);
-    }
+  if (path)
+    *path = g_strndup (p, end - p);
 }
 
 /**
@@ -153,7 +180,7 @@ g_uri_split (const gchar  *uri_string,
  * into a hash table.
  *
  * Return value: (element-type utf8 utf8): a hash table of
- * attribute/value pairs. Both names and values will fully-decoded.
+ * attribute/value pairs. Both names and values will be fully-decoded.
  * If @params cannot be parsed properly, %NULL is returned.
  */
 GHashTable *
@@ -288,7 +315,7 @@ remove_dot_segments (gchar *path)
  * Return value: the parsed hostname or IP address, or %NULL on error.
  */
 char *
-g_uri_parse_host (const gchar      *raw_host,
+g_uri_parse_host (const gchar     *raw_host,
 		  GUriParseFlags   flags,
 		  GError         **error)
 {
@@ -324,7 +351,7 @@ g_uri_parse_host (const gchar      *raw_host,
     return g_strdup (raw_host);
 
   if (flags & G_URI_PARSE_HTML5)
-    flags |= G_URI_PARSE_ALLOW_SINGLE_PERCENT;
+    flags &= ~G_URI_PARSE_ALLOW_SINGLE_PERCENT;
   decoded = uri_decode (raw_host, flags, error);
   if (!decoded)
     return NULL;
@@ -367,6 +394,83 @@ g_uri_parse_host (const gchar      *raw_host,
   return ace;
 }
 
+static char *
+uri_cleanup (const char *uri_string)
+{
+  GString *copy;
+  const char *end;
+  int len;
+
+  /* Skip leading whitespace */
+  while (g_ascii_isspace (*uri_string))
+    uri_string++;
+
+  /* Ignore trailing whitespace */
+  end = uri_string + strlen (uri_string);
+  while (end > uri_string && g_ascii_isspace (uri_string[end - 1]))
+    end--;
+
+  /* Copy the rest, encoding unencoded spaces and stripping other whitespace */
+  copy = g_string_sized_new (end - uri_string);
+  while (uri_string < end)
+    {
+      if (*uri_string == ' ')
+	g_string_append (copy, "%20");
+      else if (g_ascii_isspace (*uri_string))
+	;
+      else
+	g_string_append_c (copy, *uri_string);
+      uri_string++;
+    }
+
+  return g_strdup_free (copy, FALSE);
+}
+
+static gboolean
+uri_normalize (gchar *part, GUriParseFlags flags, GError **error)
+{
+  gchar *s, *d;
+  guchar c;
+
+  s = d = part;
+  do
+    {
+      if (*s == '%')
+	{
+	  if (!g_ascii_isxdigit (s[1]) ||
+	      !g_ascii_isxdigit (s[2]))
+	    {
+	      if (!(flags & G_URI_PARSE_ALLOW_SINGLE_PERCENT))
+		{
+		  g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+				       _("Illegal %-sequence in URI"));
+		  return FALSE;
+		}
+	      *d++ = *s;
+	      continue;
+	    }
+
+	  c = HEXCHAR (s);
+	  if (soup_char_is_uri_unreserved (c))
+	    {
+	      *d++ = c;
+	      s += 2;
+	    }
+	  else
+	    {
+	      *d++ = *s++;
+	      *d++ = g_ascii_toupper (*s++);
+	      *d++ = g_ascii_toupper (*s);
+	    }
+	}
+      else
+	*d++ = *s;
+    }
+  while (*s++);
+
+  return TRUE;
+}
+
 /**
  * g_uri_new_relative:
  * @base_uri: (allow-none): a base URI
@@ -382,11 +486,12 @@ g_uri_parse_host (const gchar      *raw_host,
  */
 GUri *
 g_uri_new_relative (GUri            *base_uri,
-		    const gchar      *uri_string,
+		    const gchar     *uri_string,
 		    GUriParseFlags   flags,
 		    GError         **error)
 {
-  GUri *guri;
+  GUri *raw = NULL, *uri = NULL;
+  gchar *raw_port = NULL;
   gchar *copy = NULL;
 
   if (base_uri && !base_uri->scheme)
@@ -396,103 +501,74 @@ g_uri_new_relative (GUri            *base_uri,
       return NULL;
     }
 
-  if (!(flags & G_URI_PARSE_STRICT))
-    {
-      int len;
+  if (!(flags & G_URI_PARSE_STRICT) && strpbrk (uri_string, " \t\n\r"))
+    uri_string = copy = uri_cleanup (uri_string);
 
-      /* Skip leading whitespace */
-      while (g_ascii_isspace (*uri_string))
-	uri_string++;
-
-      /* Strip internal tabs and newlines */
-      len = strcspn (uri_string, "\t\n\r");
-      if (uri_string[len])
-	{
-	  const gchar *src;
-	  gchar *dst;
-
-	  copy = g_malloc (strlen (uri_string) + 1);
-	  for (src = uri_string, dst = copy; *src; src++)
-	    {
-	      if (*src != '\t' && *src != '\n' && *src != '\r')
-		*dst++ = *src;
-	    }
-
-	  /* Strip trailing whitespace */
-	  while (dst > copy && g_ascii_isspace (dst[-1]))
-	    dst--;
-
-	  *dst = '\0';
-	}
-      else
-	{
-	  /* Strip trailing whitespace */
-	  len = strlen (uri_string);
-	  while (len > 0 && g_ascii_isspace (uri_string[len - 1]))
-	    len--;
-	  if (uri_string[len])
-	    copy = g_strndup (uri_string, len);
-	}
-
-      if (copy)
-	uri_string = copy;
-    }
-
-  guri = g_slice_new0 (GUri);
+  /* We use a GUri to store the raw data in, for convenience */
+  raw = g_slice_new0 (GUri);
   g_uri_split (uri_string,
-	       &guri->scheme, &guri->raw_userinfo,
-	       &guri->raw_host, &guri->raw_port,
-	       &guri->raw_path, &guri->raw_query, &guri->raw_fragment);
+	       &raw->scheme, &raw->userinfo,
+	       &raw->host, &raw_port,
+	       &raw->path, &raw->query, &raw->fragment);
   if (copy)
     g_free (copy);
 
-  if (guri->raw_userinfo)
+  if (raw->scheme)
+    uri->scheme = g_ascii_strdown (raw->scheme, -1);
+  else if (!base_uri)
     {
-      guri->userinfo = uri_normalize (guri->raw_userinfo, flags, error);
-      if (!guri->userinfo)
+      g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+			   _("URI is not absolute, and no base URI was provided"));
+      goto fail;
+    }
+
+  if (raw->userinfo)
+    {
+      uri->userinfo = uri_normalize (raw->userinfo, flags, error);
+      if (!uri->userinfo)
 	goto fail;
     }
 
-  if (guri->raw_host)
+  if (raw->host)
     {
-      guri->host = g_uri_parse_host (guri->raw_host, flags, error);
-      if (!guri->host)
+      uri->host = g_uri_parse_host (raw->host, flags, error);
+      if (!uri->host)
 	goto fail;
     }
 
-  if (guri->raw_port)
+  if (raw_port)
     {
       gchar *end;
 
-      guri->port = strtoul (guri->raw_port, &end, 10);
+      raw->port = strtoul (raw_port, &end, 10);
       if (*end)
 	{
 	  g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
 		       _("Could not parse port '%s' in URI"),
-		       guri->raw_port);
+		       raw_port);
 	  goto fail;
 	}
     }
 
-  guri->path = uri_normalize (guri->raw_path, flags, error);
-  if (!guri->path)
+  uri->path = uri_normalize (raw->path, flags, error);
+  if (!uri->path)
     goto fail;
 
-  if (guri->raw_query)
+  if (raw->query)
     {
-      guri->query = uri_normalize (guri->raw_query, flags, error);
-      if (!guri->query)
+      uri->query = uri_normalize (raw->query, flags, error);
+      if (!uri->query)
 	goto fail;
     }
 
-  if (guri->raw_fragment)
+  if (raw->fragment)
     {
-      guri->fragment = uri_normalize (guri->raw_fragment, flags, error);
-      if (!guri->fragment)
+      uri->fragment = uri_normalize (raw->fragment, flags, error);
+      if (!uri->fragment)
 	goto fail;
     }
 
-  if (!guri->scheme && !base_uri)
+  if (!uri->scheme && !base_uri)
     {
       g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
 		   _("Could not parse '%s' as absolute URI"),
@@ -505,27 +581,27 @@ g_uri_new_relative (GUri            *base_uri,
       /* This is section 5.2.2 of RFC 3986, except that we're doing
        * it in place in @guri rather than copying from R to T.
        */
-      if (guri->scheme)
-	remove_dot_segments (guri->path);
+      if (uri->scheme)
+	remove_dot_segments (uri->path);
       else
 	{
-	  if (guri->host)
-	    remove_dot_segments (guri->path);
+	  if (uri->host)
+	    remove_dot_segments (uri->path);
 	  else
 	    {
-	      if (!*guri->path)
+	      if (!*uri->path)
 		{
-		  g_free (guri->path);
-		  guri->path = g_strdup (base_uri->path);
-		  g_free (guri->raw_path);
-		  guri->raw_path = NULL;
-		  if (!guri->query)
-		    guri->query = g_strdup (base_uri->query);
+		  g_free (uri->path);
+		  uri->path = g_strdup (base_uri->path);
+		  g_free (raw->path);
+		  raw->path = NULL;
+		  if (!uri->query)
+		    uri->query = g_strdup (base_uri->query);
 		}
 	      else
 		{
-		  if (*guri->path != '/')
-		    remove_dot_segments (guri->path);
+		  if (*uri->path != '/')
+		    remove_dot_segments (uri->path);
 		  else
 		    {
 		      gchar *newpath, *last;
@@ -536,23 +612,23 @@ g_uri_new_relative (GUri            *base_uri,
 			  newpath = g_strdup_printf ("%.*s/%s",
 						     (int)(last - base_uri->path),
 						     base_uri->path,
-						     guri->path);
+						     uri->path);
 			}
 		      else
-			newpath = g_strdup_printf ("/%s", guri->path);
+			newpath = g_strdup_printf ("/%s", uri->path);
 
-		      g_free (guri->path);
-		      guri->path = newpath;
-		      g_free (guri->raw_path);
-		      guri->raw_path = NULL;
+		      g_free (uri->path);
+		      uri->path = newpath;
+		      g_free (raw->path);
+		      raw->path = NULL;
 
-		      remove_dot_segments (guri->path);
+		      remove_dot_segments (uri->path);
 		    }
 		}
 
-	      guri->userinfo = g_strdup (base_uri->userinfo);
-	      guri->host = g_strdup (base_uri->host);
-	      guri->port = base_uri->port;
+	      uri->userinfo = g_strdup (base_uri->userinfo);
+	      uri->host = g_strdup (base_uri->host);
+	      uri->port = base_uri->port;
 	    }
 	}
     }
@@ -803,61 +879,6 @@ char *
 soup_uri_decode (const gchar *part)
 {
   return uri_decoded_copy (part, strlen (part), FALSE);
-}
-
-static gchar *
-uri_normalized_copy (const gchar *part, int length,
-		     const gchar *unescape_extra, gboolean fixup)
-{
-  unsigned gchar *s, *d, c;
-  gchar *normalized = g_strndup (part, length);
-  gboolean need_fixup = FALSE;
-
-  s = d = (unsigned gchar *)normalized;
-  do {
-    if (*s == '%') {
-      if (!g_ascii_isxdigit (s[1]) ||
-	  !g_ascii_isxdigit (s[2])) {
-	if (!fixup) {
-	  g_free (normalized);
-	  return NULL;
-	}
-	*d++ = *s;
-	continue;
-      }
-
-      c = HEXCHAR (s);
-      if (soup_char_is_uri_unreserved (c) ||
-	  (unescape_extra && strchr (unescape_extra, c))) {
-	*d++ = c;
-	s += 2;
-      } else {
-	*d++ = *s++;
-	*d++ = g_ascii_toupper (*s++);
-	*d++ = g_ascii_toupper (*s);
-      }
-    } else {
-      if (*s == ' ')
-	need_fixup = TRUE;
-      *d++ = *s;
-    }
-  } while (*s++);
-
-  if (fixup && need_fixup) {
-    gchar *tmp, *sp;
-    /* This code is lame, but so are people who put
-     * unencoded spaces in URLs!
-     */
-    while ((sp = strchr (normalized, ' '))) {
-      tmp = g_strdup_printf ("%.*s%%20%s",
-			     (int)(sp - normalized),
-			     normalized, sp + 1);
-      g_free (normalized);
-      normalized = tmp;
-    };
-  }
-
-  return normalized;
 }
 
 /**

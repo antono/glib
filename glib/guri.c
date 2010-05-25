@@ -5,37 +5,56 @@
  * @scheme: (out) (allow-none): on return, contains the scheme, or %NULL
  * @userinfo: (out) (allow-none): on return, contains the userinfo, or %NULL
  * @host: (out) (allow-none): on return, contains the host, or %NULL
- * @port: (out) (allow-none): on return, contains the port, or %NULL
+ * @port: (out) (allow-none): on return, contains the port, or -1
  * @path: (out) (allow-none): on return, contains the path, or %NULL
  * @query: (out) (allow-none): on return, contains the query, or %NULL
  * @fragment: (out) (allow-none): on return, contains the fragment, or %NULL
+ * @error: #GError for error reporting, or %NULL to ignore.
  *
  * Parses @uri_string according to the generic grammar of RFC 3986,
  * and outputs the pieces into the provided variables. This is a
  * low-level method that does not do any pre- or post-processing of
- * @uri_string, does not decode percent-encoded characters, does not
- * translate between URIs and IRIs, etc. It just splits @uri_string
- * into pieces at the appropriate punctuation characters (consuming
- * some and outputting others), and returns the pieces. Components
- * that are not present in @uri_string will be set to %NULL (but note
- * that the path is always present, though it may be empty).
+ * @uri_string; it just splits @uri_string into pieces at the
+ * appropriate punctuation characters (consuming some and outputting
+ * others), and returns the pieces. Components that are not present in
+ * @uri_string will be set to %NULL (but note that the path is always
+ * present, though it may be empty).
  *
- * This method always succeeds, but if you put garbage in, you'll get
- * garbage out.
+ * For the most part, this method is "garbage in, garbage out", but
+ * certain syntax errors (such as a non-numeric port) will result in
+ * the parse failing completely.
+ *
+ * Return value: success or failure
  */
-void
+gboolean
 g_uri_split (const gchar  *uri_string,
 	     gchar       **scheme,
 	     gchar       **userinfo,
 	     gchar       **host,
-	     gchar       **port,
+	     gint        **port,
 	     gchar       **path,
 	     gchar       **query,
-	     gchar       **fragment)
+	     gchar       **fragment,
+	     GError      **error)
 {
   const gchar *end, *hash, *colon, *at, *path, *semi, *question;
   const gchar *p, *hostend;
   int len;
+
+  if (scheme)
+    *scheme = NULL;
+  if (userinfo)
+    *userinfo = NULL;
+  if (host)
+    *host = NULL;
+  if (port)
+    *port = -1;
+  if (path)
+    *path = NULL;
+  if (query)
+    *query = NULL;
+  if (fragment)
+    *fragment = NULL;
 
   /* Find scheme: initial [a-z+.-]* substring until ":" */
   p = uri_string;
@@ -50,11 +69,7 @@ g_uri_split (const gchar  *uri_string,
       p++;
     }
   else
-    {
-      if (scheme)
-	*scheme = NULL;
-      p = uri_string;
-    }
+    p = uri_string;
 
   /* Check for authority */
   if (strncmp (p, "//", 2) == 0)
@@ -84,8 +99,6 @@ g_uri_split (const gchar  *uri_string,
 	    *userinfo = g_strndup (p, at - p);
 	  p = at + 1;
 	}
-      else if (userinfo)
-	*userinfo = NULL;
 
       semi = strchr (p, ';');
       if (semi && semi < path)
@@ -94,8 +107,8 @@ g_uri_split (const gchar  *uri_string,
 	   * production, but no one ever does, and some schemes
 	   * mistakenly use semicolon as a delimiter marking the start
 	   * of the path. We have to check this after checking for
-	   * userinfo though, because that can definitely contain
-	   * semicolons.
+	   * userinfo though, because a semicolon before the "@"
+	   * must be part of the userinfo.
 	   */
 	  path = semi;
 	}
@@ -104,14 +117,26 @@ g_uri_split (const gchar  *uri_string,
       if (*p == '[')
 	{
 	  hostend = memchr (p, ']', path - p);
-	  if (hostend)
-	    hostend++;
-	  else
-	    hostend = path;
-	  if (*hostend == ':')
+	  if (!hostend)
+	    {
+	      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+			   _("Illegal hostname in URI '%s'"), uri_string);
+	      goto fail;
+	    }
+
+	  p++;
+	  hostend--;
+
+	  if (*(hostend + 2) == ':')
 	    colon = hostend;
-	  else
+	  else if (hostend + 2 == path)
 	    colon = NULL;
+	  else
+	    {
+	      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+			   _("Illegal hostname in URI '%s'"), uri_string);
+	      goto fail;
+	    }
 	}
       else
 	{
@@ -124,22 +149,25 @@ g_uri_split (const gchar  *uri_string,
 
       if (colon && colon != path - 1)
 	{
+	  glong parsed_port;
+	  gchar *end;
+
+	  parsed_port = strtol (colon + 1, &end, 10);
+	  if (parsed_port < 0 || parsed_port > G_MAXUSHORT || end != path)
+	    {
+	      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+			   _("Could not parse port '%.*s' in URI"),
+			   colon + 1, path - (colon + 1));
+	      goto fail;
+	    }
+
 	  if (port)
-	    *port = g_strndup (colon + 1, path - (colon + 1));
+	    *port = (int)parsed_port;
 	}
       else if (port)
-	*port = NULL;
+	*port = -1;
 
       p = path;
-    }
-  else
-    {
-      if (userinfo)
-	*userinfo = NULL;
-      if (host)
-	*host = NULL;
-      if (port)
-	*port = NULL;
     }
 
   /* Find fragment. */
@@ -149,8 +177,6 @@ g_uri_split (const gchar  *uri_string,
       if (fragment)
 	*fragment = g_strdup (end + 1);
     }
-  else if (fragment)
-    *fragment = NULL;
 
   /* Find query */
   question = memchr (p, '?', end - p);
@@ -160,11 +186,30 @@ g_uri_split (const gchar  *uri_string,
 	*query = g_strndup (question + 1, end - (question + 1));
       end = question;
     }
-  else if (query)
-    *query = NULL;
 
   if (path)
     *path = g_strndup (p, end - p);
+
+  return TRUE;
+
+ fail:
+  if (scheme && *scheme)
+    {
+      g_free (*scheme);
+      *scheme = NULL;
+    }
+  if (userinfo && *userinfo)
+    {
+      g_free (*userinfo);
+      *userinfo = NULL;
+    }
+  if (host && *host)
+    {
+      g_free (*host);
+      *host = NULL;
+    }
+  /* We know none of the other fields have been set yet */
+  return FALSE;
 }
 
 /**

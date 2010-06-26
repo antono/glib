@@ -1,3 +1,40 @@
+/* -*- mode: C; c-file-style: "gnu"; indent-tabs-mode: nil; -*- */
+
+/* GLIB - Library of useful routines for C programming
+ * Copyright (C) 2010 Red Hat, Inc.
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General
+ * Public License along with this library; if not, write to the
+ * Free Software Foundation, Inc., 59 Temple Place, Suite 330,
+ * Boston, MA 02111-1307, USA.
+ */
+
+#include "config.h"
+
+#include "glib.h"
+#include "glibintl.h"
+
+#include <string.h>
+
+#include "galias.h"
+
+/**
+ * SECTION:guri
+ * @short_description: URI-handling utilities
+ * @include: glib.h
+ *
+ * FIXME
+ */
 
 /**
  * g_uri_split:
@@ -212,6 +249,30 @@ g_uri_split (const gchar  *uri_string,
   return FALSE;
 }
 
+/* This is just a copy of g_str_hash() with g_ascii_toupper()s added */
+static guint
+str_ascii_case_hash (gconstpointer key)
+{
+  const char *p = key;
+  guint h = g_ascii_toupper(*p);
+
+  if (h)
+    for (p += 1; *p != '\0'; p++)
+      h = (h << 5) - h + g_ascii_toupper(*p);
+
+  return h;
+}
+
+static gboolean
+str_ascii_case_equal (gconstpointer v1,
+                      gconstpointer v2)
+{
+	const char *string1 = v1;
+	const char *string2 = v2;
+
+	return g_ascii_strcasecmp (string1, string2) == 0;
+}
+
 /**
  * g_uri_parse_params:
  * @params: a string containing "attribute=value" parameters
@@ -229,18 +290,19 @@ g_uri_split (const gchar  *uri_string,
  * If @params cannot be parsed properly, %NULL is returned.
  */
 GHashTable *
-g_uri_parse_params (const gchar *params,
-		    gssize       length,
-		    gchar        separator,
-		    gboolean     case_insensitive)
+g_uri_parse_params (const gchar     *params,
+		    gssize           length,
+		    gchar            separator,
+		    gboolean         case_insensitive)
 {
   GHashTable *hash;
   const char *end, attr, *attr_end, *value, *value_end;
+  char *decoded_attr, *decoded_value;
 
   if (case_insensitive)
     {
-      hash = g_hash_table_new_full (g_str_ascii_case_hash,
-				    g_str_ascii_case_equal,
+      hash = g_hash_table_new_full (str_ascii_case_hash,
+				    str_ascii_case_equal,
 				    g_free, g_free);
     }
   else
@@ -267,23 +329,27 @@ g_uri_parse_params (const gchar *params,
 	  g_hash_table_destroy (hash);
 	  return NULL;
 	}
+      decoded_attr = uri_decode (attr, attr_end - attr, 0, NULL);
+      if (!decoded_attr)
+        {
+	  g_hash_table_destroy (hash);
+	  return NULL;
+	}
 
       value = attr_end + 1;
-      g_hash_table_insert (hash,
-			   /* FIXME: decode */
-			   g_strndup (attr, attr_end - attr),
-			   g_strndup (value, value_end - value));
+      decoded_value = uri_decode (value, value_end - value, 0, NULL);
+      if (!decoded_value)
+        {
+          g_free (decoded_attr);
+	  g_hash_table_destroy (hash);
+	  return NULL;
+	}
+
+      g_hash_table_insert (hash, decoded_attr, decoded_value);
       attr = value_end + 1;
     }
 
   return hash;
-}
-
-static gchar *
-uri_normalize (const gchar      *segment,
-	       GUriParseFlags   flags,
-	       GError         **error)
-{
 }
 
 /* Does the "Remove Dot Segments" algorithm from section 5.2.4 of RFC
@@ -709,6 +775,7 @@ g_uri_to_string (GUri              *uri,
   g_return_val_if_fail (uri != NULL, NULL);
 
   str = g_string_new (uri->scheme);
+  g_string_append_c (str, ':');
 
   if (uri->host)
     {
@@ -758,21 +825,21 @@ g_uri_to_string (GUri              *uri,
 }
 
 /**
- * soup_uri_copy:
- * @uri: a #SoupURI
+ * g_uri_copy:
+ * @uri: a #GUri
  *
  * Copies @uri
  *
- * Return value: a copy of @uri, which must be freed with soup_uri_free()
- **/
-SoupURI *
-soup_uri_copy (SoupURI *uri)
+ * Return value: a copy of @uri
+ */
+GUri *
+g_uri_copy (GUri *uri)
 {
-  SoupURI *dup;
+  GUri *dup;
 
   g_return_val_if_fail (uri != NULL, NULL);
 
-  dup = g_slice_new0 (SoupURI);
+  dup = g_slice_new0 (GUri);
   dup->scheme   = uri->scheme;
   dup->user     = g_strdup (uri->user);
   dup->password = g_strdup (uri->password);
@@ -785,49 +852,14 @@ soup_uri_copy (SoupURI *uri)
   return dup;
 }
 
-static inline gboolean
-parts_equal (const gchar *one, const gchar *two, gboolean insensitive)
-{
-  if (!one && !two)
-    return TRUE;
-  if (!one || !two)
-    return FALSE;
-  return insensitive ? !g_ascii_strcasecmp (one, two) : !strcmp (one, two);
-}
-
 /**
- * soup_uri_equal:
- * @uri1: a #SoupURI
- * @uri2: another #SoupURI
- *
- * Tests whether or not @uri1 and @uri2 are equal in all parts
- *
- * Return value: %TRUE or %FALSE
- **/
-gboolean 
-soup_uri_equal (SoupURI *uri1, SoupURI *uri2)
-{
-  if (uri1->scheme != uri2->scheme                         ||
-      uri1->port   != uri2->port                           ||
-      !parts_equal (uri1->user, uri2->user, FALSE)         ||
-      !parts_equal (uri1->password, uri2->password, FALSE) ||
-      !parts_equal (uri1->host, uri2->host, TRUE)          ||
-      !parts_equal (uri1->path, uri2->path, FALSE)         ||
-      !parts_equal (uri1->query, uri2->query, FALSE)       ||
-      !parts_equal (uri1->fragment, uri2->fragment, FALSE))
-    return FALSE;
-
-  return TRUE;
-}
-
-/**
- * soup_uri_free:
- * @uri: a #SoupURI
+ * g_uri_free:
+ * @uri: a #GUri
  *
  * Frees @uri.
- **/
+ */
 void
-soup_uri_free (SoupURI *uri)
+g_uri_free (GUri *uri)
 {
   g_return_if_fail (uri != NULL);
 
@@ -838,7 +870,7 @@ soup_uri_free (SoupURI *uri)
   g_free (uri->query);
   g_free (uri->fragment);
 
-  g_slice_free (SoupURI, uri);
+  g_slice_free (GUri, uri);
 }
 
 static void
@@ -857,7 +889,7 @@ append_uri_encoded (GString *str, const gchar *in, const gchar *extra_enc_chars)
 }
 
 /**
- * soup_uri_encode:
+ * g_uri_encode:
  * @part: a URI part
  * @escape_extra: additional reserved gcharacters to escape (or %NULL)
  *
@@ -868,7 +900,7 @@ append_uri_encoded (GString *str, const gchar *in, const gchar *extra_enc_chars)
  * Return value: the encoded URI part
  **/
 char *
-soup_uri_encode (const gchar *part, const gchar *escape_extra)
+g_uri_encode (const gchar *part, const gchar *escape_extra)
 {
   GString *str;
   gchar *encoded;
@@ -912,7 +944,7 @@ uri_decoded_copy (const gchar *part, int length, gboolean fixup)
 }
 
 /**
- * soup_uri_decode:
+ * g_uri_decode:
  * @part: a URI part
  *
  * Fully %<!-- -->-decodes @part.
@@ -921,13 +953,13 @@ uri_decoded_copy (const gchar *part, int length, gboolean fixup)
  * code was encountered.
  */
 char *
-soup_uri_decode (const gchar *part)
+g_uri_decode (const gchar *part)
 {
   return uri_decoded_copy (part, strlen (part), FALSE);
 }
 
 /**
- * soup_uri_normalize:
+ * g_uri_normalize:
  * @part: a URI part
  * @unescape_extra: reserved gcharacters to unescape (or %NULL)
  *
@@ -936,7 +968,7 @@ soup_uri_decode (const gchar *part)
  *
  * "Unreserved" gcharacters are those that are not allowed to be used
  * for punctuation according to the URI spec. For example, letters are
- * unreserved, so soup_uri_normalize() will turn
+ * unreserved, so g_uri_normalize() will turn
  * <literal>http://example.com/foo/b%<!-- -->61r</literal> into
  * <literal>http://example.com/foo/bar</literal>, which is guaranteed
  * to mean the same thing. However, "/" is "reserved", so
@@ -948,15 +980,15 @@ soup_uri_decode (const gchar *part)
  * code was encountered.
  */
 char *
-soup_uri_normalize (const gchar *part, const gchar *unescape_extra)
+g_uri_normalize (const gchar *part, const gchar *unescape_extra)
 {
   return uri_normalized_copy (part, strlen (part), unescape_extra, FALSE);
 }
 
 
 /**
- * soup_uri_uses_default_port:
- * @uri: a #SoupURI
+ * g_uri_uses_default_port:
+ * @uri: a #GUri
  *
  * Tests if @uri uses the default port for its scheme. (Eg, 80 for
  * http.) (This only works for http and https; libsoup does not know
@@ -965,32 +997,32 @@ soup_uri_normalize (const gchar *part, const gchar *unescape_extra)
  * Return value: %TRUE or %FALSE
  **/
 gboolean
-soup_uri_uses_default_port (SoupURI *uri)
+g_uri_uses_default_port (GUri *uri)
 {
-  g_return_val_if_fail (uri->scheme == SOUP_URI_SCHEME_HTTP ||
-			uri->scheme == SOUP_URI_SCHEME_HTTPS ||
-			uri->scheme == SOUP_URI_SCHEME_FTP, FALSE);
+  g_return_val_if_fail (uri->scheme == G_URI_SCHEME_HTTP ||
+			uri->scheme == G_URI_SCHEME_HTTPS ||
+			uri->scheme == G_URI_SCHEME_FTP, FALSE);
 
   return uri->port == soup_scheme_default_port (uri->scheme);
 }
 
 /**
- * SOUP_URI_SCHEME_HTTP:
+ * G_URI_SCHEME_HTTP:
  *
  * "http" as an interned string. This can be compared directly against
- * the value of a #SoupURI's <structfield>scheme</structfield>
+ * the value of a #GUri's <structfield>scheme</structfield>
  **/
 
 /**
- * SOUP_URI_SCHEME_HTTPS:
+ * G_URI_SCHEME_HTTPS:
  *
  * "https" as an interned string. This can be compared directly
- * against the value of a #SoupURI's <structfield>scheme</structfield>
+ * against the value of a #GUri's <structfield>scheme</structfield>
  **/
 
 /**
- * soup_uri_get_scheme:
- * @uri: a #SoupURI
+ * g_uri_get_scheme:
+ * @uri: a #GUri
  *
  * Gets @uri's scheme.
  *
@@ -999,29 +1031,29 @@ soup_uri_uses_default_port (SoupURI *uri)
  * Since: 2.32
  **/
 const gchar *
-soup_uri_get_scheme (SoupURI *uri)
+g_uri_get_scheme (GUri *uri)
 {
   return uri->scheme;
 }
 
 /**
- * soup_uri_set_scheme:
- * @uri: a #SoupURI
+ * g_uri_set_scheme:
+ * @uri: a #GUri
  * @scheme: the URI scheme
  *
  * Sets @uri's scheme to @scheme. This will also set @uri's port to
  * the default port for @scheme, if known.
  **/
 void
-soup_uri_set_scheme (SoupURI *uri, const gchar *scheme)
+g_uri_set_scheme (GUri *uri, const gchar *scheme)
 {
-  uri->scheme = soup_uri_parse_scheme (scheme, strlen (scheme));
+  uri->scheme = g_uri_parse_scheme (scheme, strlen (scheme));
   uri->port = soup_scheme_default_port (uri->scheme);
 }
 
 /**
- * soup_uri_get_user:
- * @uri: a #SoupURI
+ * g_uri_get_user:
+ * @uri: a #GUri
  *
  * Gets @uri's user.
  *
@@ -1030,28 +1062,28 @@ soup_uri_set_scheme (SoupURI *uri, const gchar *scheme)
  * Since: 2.32
  **/
 const gchar *
-soup_uri_get_user (SoupURI *uri)
+g_uri_get_user (GUri *uri)
 {
   return uri->user;
 }
 
 /**
- * soup_uri_set_user:
- * @uri: a #SoupURI
+ * g_uri_set_user:
+ * @uri: a #GUri
  * @user: the username, or %NULL
  *
  * Sets @uri's user to @user.
  **/
 void
-soup_uri_set_user (SoupURI *uri, const gchar *user)
+g_uri_set_user (GUri *uri, const gchar *user)
 {
   g_free (uri->user);
   uri->user = g_strdup (user);
 }
 
 /**
- * soup_uri_get_password:
- * @uri: a #SoupURI
+ * g_uri_get_password:
+ * @uri: a #GUri
  *
  * Gets @uri's password.
  *
@@ -1060,28 +1092,28 @@ soup_uri_set_user (SoupURI *uri, const gchar *user)
  * Since: 2.32
  **/
 const gchar *
-soup_uri_get_password (SoupURI *uri)
+g_uri_get_password (GUri *uri)
 {
   return uri->password;
 }
 
 /**
- * soup_uri_set_password:
- * @uri: a #SoupURI
+ * g_uri_set_password:
+ * @uri: a #GUri
  * @password: the password, or %NULL
  *
  * Sets @uri's password to @password.
  **/
 void
-soup_uri_set_password (SoupURI *uri, const gchar *password)
+g_uri_set_password (GUri *uri, const gchar *password)
 {
   g_free (uri->password);
   uri->password = g_strdup (password);
 }
 
 /**
- * soup_uri_get_host:
- * @uri: a #SoupURI
+ * g_uri_get_host:
+ * @uri: a #GUri
  *
  * Gets @uri's host.
  *
@@ -1090,14 +1122,14 @@ soup_uri_set_password (SoupURI *uri, const gchar *password)
  * Since: 2.32
  **/
 const gchar *
-soup_uri_get_host (SoupURI *uri)
+g_uri_get_host (GUri *uri)
 {
   return uri->host;
 }
 
 /**
- * soup_uri_set_host:
- * @uri: a #SoupURI
+ * g_uri_set_host:
+ * @uri: a #GUri
  * @host: the hostname or IP address, or %NULL
  *
  * Sets @uri's host to @host.
@@ -1107,15 +1139,15 @@ soup_uri_get_host (SoupURI *uri)
  * converting @uri to a string.
  **/
 void
-soup_uri_set_host (SoupURI *uri, const gchar *host)
+g_uri_set_host (GUri *uri, const gchar *host)
 {
   g_free (uri->host);
   uri->host = g_strdup (host);
 }
 
 /**
- * soup_uri_get_port:
- * @uri: a #SoupURI
+ * g_uri_get_port:
+ * @uri: a #GUri
  *
  * Gets @uri's port.
  *
@@ -1124,28 +1156,28 @@ soup_uri_set_host (SoupURI *uri, const gchar *host)
  * Since: 2.32
  **/
 guint
-soup_uri_get_port (SoupURI *uri)
+g_uri_get_port (GUri *uri)
 {
   return uri->port;
 }
 
 /**
- * soup_uri_set_port:
- * @uri: a #SoupURI
+ * g_uri_set_port:
+ * @uri: a #GUri
  * @port: the port, or 0
  *
  * Sets @uri's port to @port. If @port is 0, @uri will not have an
  * explicitly-specified port.
  **/
 void
-soup_uri_set_port (SoupURI *uri, guint port)
+g_uri_set_port (GUri *uri, guint port)
 {
   uri->port = port;
 }
 
 /**
- * soup_uri_get_path:
- * @uri: a #SoupURI
+ * g_uri_get_path:
+ * @uri: a #GUri
  *
  * Gets @uri's path.
  *
@@ -1154,28 +1186,28 @@ soup_uri_set_port (SoupURI *uri, guint port)
  * Since: 2.32
  **/
 const gchar *
-soup_uri_get_path (SoupURI *uri)
+g_uri_get_path (GUri *uri)
 {
   return uri->path;
 }
 
 /**
- * soup_uri_set_path:
- * @uri: a #SoupURI
+ * g_uri_set_path:
+ * @uri: a #GUri
  * @path: the path
  *
  * Sets @uri's path to @path.
  **/
 void
-soup_uri_set_path (SoupURI *uri, const gchar *path)
+g_uri_set_path (GUri *uri, const gchar *path)
 {
   g_free (uri->path);
   uri->path = g_strdup (path);
 }
 
 /**
- * soup_uri_get_query:
- * @uri: a #SoupURI
+ * g_uri_get_query:
+ * @uri: a #GUri
  *
  * Gets @uri's query.
  *
@@ -1184,43 +1216,43 @@ soup_uri_set_path (SoupURI *uri, const gchar *path)
  * Since: 2.32
  **/
 const gchar *
-soup_uri_get_query (SoupURI *uri)
+g_uri_get_query (GUri *uri)
 {
   return uri->query;
 }
 
 /**
- * soup_uri_set_query:
- * @uri: a #SoupURI
+ * g_uri_set_query:
+ * @uri: a #GUri
  * @query: the query
  *
  * Sets @uri's query to @query.
  **/
 void
-soup_uri_set_query (SoupURI *uri, const gchar *query)
+g_uri_set_query (GUri *uri, const gchar *query)
 {
   g_free (uri->query);
   uri->query = g_strdup (query);
 }
 
 /**
- * soup_uri_set_query_from_form:
- * @uri: a #SoupURI
+ * g_uri_set_query_from_form:
+ * @uri: a #GUri
  * @form: a #GHashTable containing HTML form information
  *
  * Sets @uri's query to the result of encoding @form according to the
  * HTML form rules. See soup_form_encode_hash() for more information.
  **/
 void
-soup_uri_set_query_from_form (SoupURI *uri, GHashTable *form)
+g_uri_set_query_from_form (GUri *uri, GHashTable *form)
 {
   g_free (uri->query);
   uri->query = soup_form_encode_urlencoded (form);
 }
 
 /**
- * soup_uri_set_query_from_fields:
- * @uri: a #SoupURI
+ * g_uri_set_query_from_fields:
+ * @uri: a #GUri
  * @first_field: name of the first form field to encode into query
  * @...: value of @first_field, followed by additional field names
  * and values, terminated by %NULL.
@@ -1230,7 +1262,7 @@ soup_uri_set_query_from_form (SoupURI *uri, GHashTable *form)
  * soup_form_encode() for more information.
  **/
 void
-soup_uri_set_query_from_fields (SoupURI    *uri,
+g_uri_set_query_from_fields (GUri    *uri,
 				const gchar *first_field,
 				...)
 {
@@ -1243,8 +1275,8 @@ soup_uri_set_query_from_fields (SoupURI    *uri,
 }
 
 /**
- * soup_uri_get_fragment:
- * @uri: a #SoupURI
+ * g_uri_get_fragment:
+ * @uri: a #GUri
  *
  * Gets @uri's fragment.
  *
@@ -1253,27 +1285,27 @@ soup_uri_set_query_from_fields (SoupURI    *uri,
  * Since: 2.32
  **/
 const gchar *
-soup_uri_get_fragment (SoupURI *uri)
+g_uri_get_fragment (GUri *uri)
 {
   return uri->fragment;
 }
 
 /**
- * soup_uri_set_fragment:
- * @uri: a #SoupURI
+ * g_uri_set_fragment:
+ * @uri: a #GUri
  * @fragment: the fragment
  *
  * Sets @uri's fragment to @fragment.
  **/
 void
-soup_uri_set_fragment (SoupURI *uri, const gchar *fragment)
+g_uri_set_fragment (GUri *uri, const gchar *fragment)
 {
   g_free (uri->fragment);
   uri->fragment = g_strdup (fragment);
 }
 
 /**
- * soup_uri_copy_host:
+ * g_uri_copy_host:
  * @uri: a #SoupUri
  *
  * Makes a copy of @uri, considering only the protocol, host, and port
@@ -1282,27 +1314,27 @@ soup_uri_set_fragment (SoupURI *uri, const gchar *fragment)
  *
  * Since: 2.26.3
  **/
-SoupURI *
-soup_uri_copy_host (SoupURI *uri)
+GUri *
+g_uri_copy_host (GUri *uri)
 {
-  SoupURI *dup;
+  GUri *dup;
 
   g_return_val_if_fail (uri != NULL, NULL);
 
-  dup = soup_uri_new (NULL);
+  dup = g_uri_new (NULL);
   dup->scheme = uri->scheme;
   dup->host   = g_strdup (uri->host);
   dup->port   = uri->port;
-  if (dup->scheme == SOUP_URI_SCHEME_HTTP ||
-      dup->scheme == SOUP_URI_SCHEME_HTTPS)
+  if (dup->scheme == G_URI_SCHEME_HTTP ||
+      dup->scheme == G_URI_SCHEME_HTTPS)
     dup->path = g_strdup ("");
 
   return dup;
 }
 
 /**
- * soup_uri_host_hash:
- * @key: a #SoupURI
+ * g_uri_host_hash:
+ * @key: a #GUri
  *
  * Hashes @key, considering only the scheme, host, and port.
  *
@@ -1311,9 +1343,9 @@ soup_uri_copy_host (SoupURI *uri)
  * Since: 2.26.3
  **/
 guint
-soup_uri_host_hash (gconstpointer key)
+g_uri_host_hash (gconstpointer key)
 {
-  const SoupURI *uri = key;
+  const GUri *uri = key;
 
   g_return_val_if_fail (uri != NULL && uri->host != NULL, 0);
 
@@ -1322,9 +1354,9 @@ soup_uri_host_hash (gconstpointer key)
 }
 
 /**
- * soup_uri_host_equal:
- * @v1: a #SoupURI
- * @v2: a #SoupURI
+ * g_uri_host_equal:
+ * @v1: a #GUri
+ * @v2: a #GUri
  *
  * Compares @v1 and @v2, considering only the scheme, host, and port.
  *
@@ -1334,10 +1366,10 @@ soup_uri_host_hash (gconstpointer key)
  * Since: 2.26.3
  **/
 gboolean
-soup_uri_host_equal (gconstpointer v1, gconstpointer v2)
+g_uri_host_equal (gconstpointer v1, gconstpointer v2)
 {
-  const SoupURI *one = v1;
-  const SoupURI *two = v2;
+  const GUri *one = v1;
+  const GUri *two = v2;
 
   g_return_val_if_fail (one != NULL && two != NULL, one == two);
   g_return_val_if_fail (one->host != NULL && two->host != NULL, one->host == two->host);
@@ -1352,15 +1384,15 @@ soup_uri_host_equal (gconstpointer v1, gconstpointer v2)
 
 
 GType
-soup_uri_get_type (void)
+g_uri_get_type (void)
 {
   static volatile gsize type_volatile = 0;
 
   if (g_once_init_enter (&type_volatile)) {
     GType type = g_boxed_type_register_static (
-					       g_intern_static_string ("SoupURI"),
-					       (GBoxedCopyFunc) soup_uri_copy,
-					       (GBoxedFreeFunc) soup_uri_free);
+					       g_intern_static_string ("GUri"),
+					       (GBoxedCopyFunc) g_uri_copy,
+					       (GBoxedFreeFunc) g_uri_free);
     g_once_init_leave (&type_volatile, type);
   }
   return type_volatile;

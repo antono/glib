@@ -505,6 +505,46 @@ g_uri_parse_host (const gchar     *raw_host,
   return ace;
 }
 
+/**
+ * g_uri_parse_userinfo:
+ * @raw_userinfo: the raw (percent-encoded) "userinfo" field of the URI
+ * @flags: parsing flags
+ * @username: (out) (allow-none): on output, will contain the decoded
+ *   username from @raw_userinfo
+ * @password: (out) (allow-none): on output, will contain the decoded
+ *   password from @raw_userinfo
+ * @params: (out) (allow-none): on output, will contain the undecoded
+ *   params from @raw_userinfo
+ * @error: #GError for error reporting, or %NULL to ignore.
+ *
+ * Parses @raw_userinfo according to @flags, and outputs it into
+ * @username, @password, and @params.
+ *
+ * If @flags contains %G_URI_PARSE_USERINFO_PARAMS, anything after a
+ * ';' in @raw_userinfo will be interpreted as parameters (eg,
+ * authentication type), and returned (undecoded) in @params.
+ *
+ * If @flags contains %G_URI_PARSE_USERINFO_PASSWORD, anything after a
+ * ':' in @raw_userinfo (and before ';' if params are also specified)
+ * will be interpreted as a password and returned (decoded) in
+ * @password.
+ *
+ * Whatever portion of @raw_userinfo that is not interpreted as params
+ * or password will be output in @username.
+ *
+ * Return value: %TRUE on success, %FALSE on parse failure.
+ */
+gboolean
+g_uri_parse_userinfo (const gchar     *raw_userinfo,
+                      GUriParseFlags   flags,
+                      gchar          **username,
+                      gchar          **password,
+                      gchar          **params,
+                      GError         **error)
+{
+  FIXME;
+}
+
 static char *
 uri_cleanup (const char *uri_string)
 {
@@ -768,7 +808,7 @@ g_uri_new (const gchar     *uri_string,
  **/
 gchar *
 g_uri_to_string (GUri              *uri,
-		 GUriToStringFlags  flags)		 
+		 GUriToStringFlags  flags)
 {
   GString *str;
 
@@ -1303,85 +1343,6 @@ g_uri_set_fragment (GUri *uri, const gchar *fragment)
   g_free (uri->fragment);
   uri->fragment = g_strdup (fragment);
 }
-
-/**
- * g_uri_copy_host:
- * @uri: a #SoupUri
- *
- * Makes a copy of @uri, considering only the protocol, host, and port
- *
- * Return value: the new #SoupUri
- *
- * Since: 2.26.3
- **/
-GUri *
-g_uri_copy_host (GUri *uri)
-{
-  GUri *dup;
-
-  g_return_val_if_fail (uri != NULL, NULL);
-
-  dup = g_uri_new (NULL);
-  dup->scheme = uri->scheme;
-  dup->host   = g_strdup (uri->host);
-  dup->port   = uri->port;
-  if (dup->scheme == G_URI_SCHEME_HTTP ||
-      dup->scheme == G_URI_SCHEME_HTTPS)
-    dup->path = g_strdup ("");
-
-  return dup;
-}
-
-/**
- * g_uri_host_hash:
- * @key: a #GUri
- *
- * Hashes @key, considering only the scheme, host, and port.
- *
- * Return value: a hash
- *
- * Since: 2.26.3
- **/
-guint
-g_uri_host_hash (gconstpointer key)
-{
-  const GUri *uri = key;
-
-  g_return_val_if_fail (uri != NULL && uri->host != NULL, 0);
-
-  return GPOINTER_TO_UINT (uri->scheme) + uri->port +
-    soup_str_case_hash (uri->host);
-}
-
-/**
- * g_uri_host_equal:
- * @v1: a #GUri
- * @v2: a #GUri
- *
- * Compares @v1 and @v2, considering only the scheme, host, and port.
- *
- * Return value: whether or not the URIs are equal in scheme, host,
- * and port.
- *
- * Since: 2.26.3
- **/
-gboolean
-g_uri_host_equal (gconstpointer v1, gconstpointer v2)
-{
-  const GUri *one = v1;
-  const GUri *two = v2;
-
-  g_return_val_if_fail (one != NULL && two != NULL, one == two);
-  g_return_val_if_fail (one->host != NULL && two->host != NULL, one->host == two->host);
-
-  if (one->scheme != two->scheme)
-    return FALSE;
-  if (one->port != two->port)
-    return FALSE;
-
-  return g_ascii_strcasecmp (one->host, two->host) == 0;
-}
-
 
 GType
 g_uri_get_type (void)

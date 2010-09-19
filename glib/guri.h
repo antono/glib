@@ -49,24 +49,24 @@ struct _GUri {
 };
 
 typedef enum {
-  G_URI_PARSE_STRICT    = 1 << 0,
-  G_URI_PARSE_HTML5     = 1 << 1,
-  G_URI_NO_IRI          = 1 << 2,
-  G_URI_HAS_PASSWORD    = 1 << 3,
-  G_URI_HAS_AUTH_PARAMS = 1 << 4,
-  G_URI_HOST_IS_DNS     = 1 << 5,
-  G_URI_DECODE_FULLY    = 1 << 6
-} GUriFlags;
+  G_URI_PARSE_STRICT      = 1 << 0,
+  G_URI_PARSE_HTML5       = 1 << 1,
+  G_URI_PARSE_NO_IRI      = 1 << 2,
+  G_URI_PARSE_PASSWORD    = 1 << 3,
+  G_URI_PARSE_AUTH_PARAMS = 1 << 4,
+  G_URI_PARSE_DNS         = 1 << 5,
+  G_URI_PARSE_DECODED     = 1 << 6
+} GUriParseFlags;
 
 GUri *       g_uri_new             (const gchar        *uri_string,
-				    GUriFlags           flags,
+				    GUriParseFlags      flags,
 				    GError            **error);
 GUri *       g_uri_new_relative    (GUri               *base_uri,
 				    const gchar        *uri_string,
-				    GUriFlags           flags,
+				    GUriParseFlags      flags,
 				    GError            **error);
 gboolean     g_uri_reparse         (GUri               *uri,
-				    GUriFlags           flags,
+				    GUriParseFlags      flags,
 				    GError            **error);
 
 typedef enum {
@@ -131,11 +131,41 @@ GHashTable * g_uri_parse_params    (const gchar        *params,
 				    gchar               separator,
 				    gboolean            case_insensitive);
 gboolean     g_uri_parse_host      (const gchar        *uri_string,
-				    GUriFlags           flags,
+				    GUriParseFlags      flags,
 				    gchar             **scheme,
 				    gchar             **host,
 				    gushort            *port,
 				    GError            **error);
+
+gchar *      g_uri_build           (const gchar        *scheme,
+				    const gchar        *userinfo,
+				    const gchar        *host,
+				    const gchar        *port,
+				    const gchar        *path,
+				    const gchar        *query,
+				    const gchar        *fragment);
+
+
+/**
+ * G_URI_ERROR:
+ *
+ * Error domain for URI methods. Errors in this domain will be from
+ * the #GUriError enumeration. See #GError for information on error
+ * domains.
+ */
+#define G_URI_ERROR (g_uri_error_quark ())
+GQuark g_uri_error_quark (void);
+
+/**
+ * GUriError:
+ * @G_URI_ERROR_PARSE: URI could not be parsed
+ *
+ * Error codes returned by #GUri methods.
+ */
+typedef enum
+{
+  G_URI_ERROR_PARSE,
+} GUriError;
 
 G_END_DECLS
 

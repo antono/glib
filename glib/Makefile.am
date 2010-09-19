@@ -201,6 +201,7 @@ libglib_2_0_la_SOURCES = 	\
 	gunidecomp.h		\
 	gunidecomp.c		\
 	gunicodeprivate.h	\
+	guri.c			\
 	gurifuncs.c 		\
 	gutils.c		\
 	gvariant.h		\
@@ -318,6 +319,7 @@ glibsubinclude_HEADERS = \
 	gtree.h		\
 	gtypes.h	\
 	gunicode.h	\
+	guri.h		\
 	gurifuncs.h 	\
 	gutils.h	\
 	gvarianttype.h	\

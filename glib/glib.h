@@ -90,6 +90,7 @@
 #include <glib/gtree.h>
 #include <glib/gtypes.h>
 #include <glib/gunicode.h>
+#include <glib/guri.h>
 #include <glib/gurifuncs.h>
 #include <glib/gutils.h>
 #include <glib/gvarianttype.h>

@@ -55,7 +55,8 @@ typedef enum {
   G_URI_PARSE_PASSWORD    = 1 << 3,
   G_URI_PARSE_AUTH_PARAMS = 1 << 4,
   G_URI_PARSE_DNS         = 1 << 5,
-  G_URI_PARSE_DECODED     = 1 << 6
+  G_URI_PARSE_DECODED     = 1 << 6,
+  G_URI_PARSE_UTF8_ONLY   = 1 << 7
 } GUriParseFlags;
 
 GUri *       g_uri_new             (const gchar        *uri_string,

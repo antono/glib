@@ -83,9 +83,10 @@
  *
  * Note however that all of the (string) fields in a #GUri are
  * guaranteed to be valid UTF-8 strings, so if @uri_string contained
- * encoded non-UTF-8 data, it will always be left %<!-- -->-encoded in
- * the corresponding #GUri fields, even if the #GUriParseFlags would
- * otherwise call for decoding it.
+ * encoded non-UTF-8 data, it will normally be left %<!-- -->-encoded
+ * in the corresponding #GUri fields, even if the #GUriParseFlags
+ * would otherwise call for decoding it. You can use the flag
+ * %G_URI_PARSE_UTF8_ONLY to cause this case to be an error instead.
  *
  * Since: 2.28
  */
@@ -119,6 +120,7 @@ uri_decoder (const gchar     *part,
                 {
                   g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_PARSE,
                                        _("Invalid %-encoding in URI"));
+                  g_free (decoded);
                   return FALSE;
                 }
 
@@ -151,6 +153,14 @@ uri_decoder (const gchar     *part,
     {
       GString *tmp;
       const gchar *p = decoded;
+
+      if (flags & G_URI_PARSE_UTF8_ONLY)
+        {
+          g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+                               _("Non-UTF8 characters in URI"));
+          g_free (decoded);
+          return FALSE;
+        }
 
       tmp = g_string_new (NULL);
 
@@ -1111,6 +1121,13 @@ g_uri_parse_host (const gchar     *uri_string,
 
   g_uri_split (uri_string, &raw_scheme, NULL, &raw_host, &raw_port,
                NULL, NULL, NULL);
+  if (!raw_host)
+    {
+      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+		   _("URI '%s' has no host component"),
+		   uri_string);
+      goto fail;
+    }
 
   if (raw_port)
     {

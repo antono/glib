@@ -168,11 +168,13 @@ g_uri_unescape_string (const char *escaped_string,
  * URI = scheme ":" hier-part [ "?" query ] [ "#" fragment ] 
  * </programlisting>
  * Common schemes include "file", "http", "svn+ssh", etc.
- * 
+ *
  * Returns: The "Scheme" component of the URI, or %NULL on error. 
  * The returned string should be freed when no longer needed.
  *
  * Since: 2.16
+ *
+ * Deprecated: Use g_uri_peek_scheme().
  **/
 char *
 g_uri_parse_scheme (const char  *uri)
@@ -210,6 +212,66 @@ g_uri_parse_scheme (const char  *uri)
     }
   
   return g_strndup (uri, p - uri - 1);
+}
+
+/**
+ * g_uri_peek_scheme:
+ * @uri: a valid URI.
+ * 
+ * Gets the scheme portion of a URI string. RFC 3986 decodes the scheme as:
+ * <programlisting>
+ * URI = scheme ":" hier-part [ "?" query ] [ "#" fragment ] 
+ * </programlisting>
+ * Common schemes include "file", "http", "svn+ssh", etc.
+ * 
+ * Returns: The "scheme" component of the URI, or %NULL on error. The
+ * returned string is normalized to lowercase, and interned via
+ * g_intern_string().
+ *
+ * Since: 2.28
+ **/
+const char *
+g_uri_peek_scheme (const char  *uri)
+{
+  const char *p;
+  char c;
+  char *lower_scheme;
+  const char *scheme;
+
+  g_return_val_if_fail (uri != NULL, NULL);
+
+  /* From RFC 3986 Decodes:
+   * URI         = scheme ":" hier-part [ "?" query ] [ "#" fragment ]
+   */ 
+
+  p = uri;
+  
+  /* Decode scheme:
+     scheme      = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+  */
+
+  if (!g_ascii_isalpha (*p))
+    return NULL;
+  
+  while (1)
+    {
+      c = *p++;
+      
+      if (c == ':')
+	break;
+      
+      if (!(g_ascii_isalnum(c) ||
+	    c == '+' ||
+	    c == '-' ||
+	    c == '.'))
+	return NULL;
+    }
+  
+  lower_scheme = g_ascii_strdown (uri, p - uri - 1);
+  scheme = g_intern_string (lower_scheme);
+  g_free (lower_scheme);
+
+  return scheme;
 }
 
 /**

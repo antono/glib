@@ -44,8 +44,6 @@ struct _GUri {
   gchar   *path;
   gchar   *query;
   gchar   *fragment;
-
-  gchar   *uri_string;
 };
 
 typedef enum {
@@ -54,7 +52,7 @@ typedef enum {
   G_URI_PARSE_NO_IRI      = 1 << 2,
   G_URI_PARSE_PASSWORD    = 1 << 3,
   G_URI_PARSE_AUTH_PARAMS = 1 << 4,
-  G_URI_PARSE_DNS         = 1 << 5,
+  G_URI_PARSE_NON_DNS     = 1 << 5,
   G_URI_PARSE_DECODED     = 1 << 6,
   G_URI_PARSE_UTF8_ONLY   = 1 << 7
 } GUriParseFlags;
@@ -64,9 +62,6 @@ GUri *       g_uri_new             (const gchar        *uri_string,
 				    GError            **error);
 GUri *       g_uri_new_relative    (GUri               *base_uri,
 				    const gchar        *uri_string,
-				    GUriParseFlags      flags,
-				    GError            **error);
-gboolean     g_uri_reparse         (GUri               *uri,
 				    GUriParseFlags      flags,
 				    GError            **error);
 
@@ -165,7 +160,16 @@ GQuark g_uri_error_quark (void);
  */
 typedef enum
 {
-  G_URI_ERROR_PARSE,
+  G_URI_ERROR_MISC,
+  G_URI_ERROR_BAD_SCHEME,
+  G_URI_ERROR_BAD_USER,
+  G_URI_ERROR_BAD_PASSWORD,
+  G_URI_ERROR_BAD_AUTH_PARAMS,
+  G_URI_ERROR_BAD_HOST,
+  G_URI_ERROR_BAD_PORT,
+  G_URI_ERROR_BAD_PATH,
+  G_URI_ERROR_BAD_QUERY,
+  G_URI_ERROR_BAD_FRAGMENT
 } GUriError;
 
 G_END_DECLS

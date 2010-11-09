@@ -50,16 +50,16 @@
  *
  * A parsed URI. The exact manner in which a URI string is broken down
  * into a #GUri depends on the #GUriParseFlags that were used when
- * creating it (or reparsing it via g_uri_reparse()).
+ * creating it.
  *
  * @scheme is always set, and always lowercase, even if @uri_string
  * contains uppercase letters in the scheme.
  *
  * @host will be set if @uri_string has an "authority" component (that
  * is, if the scheme is followed by "://" rather than just ":"). If
- * the URI was parsed with %G_URI_PARSE_DNS, @host will be assumed to
- * be an internet hostname (or IP address) and will be decoded
- * accordingly.
+ * the URI was not parsed with %G_URI_PARSE_NON_DNS, @host will be
+ * assumed to be an internet hostname (or IP address) and will be
+ * decoded accordingly.
  *
  * The generic URI syntax allows a "userinfo" component before the
  * hostname. Some URI schemes further break the userinfo down into a
@@ -91,6 +91,33 @@
  * Since: 2.28
  */
 
+/**
+ * GUriParseFlags:
+ * @G_URI_PARSE_STRICT: Parse the URI strictly according to the RFC
+ *     3986 grammar.
+ * @G_URI_PARSE_HTML5: Parse the URI according to the HTML5 web
+ *     address parsing rules.
+ * @G_URI_PARSE_NO_IRI: Disallow Internationalized URIs; return an
+ *     error if the URI contains non-ASCII characters
+ * @G_URI_PARSE_PASSWORD: Split the userinfo into user and password,
+ *     separated by ':'.
+ * @G_URI_PARSE_AUTH_PARAMS: Split the userinfo into user/password and
+ *     parameters, separated by ';'.
+ * @G_URI_PARSE_NON_DNS: Do not parse the host as a DNS host/IP address.
+ *     (Eg, for smb URIs with NetBIOS hostnames).
+ * @G_URI_PARSE_DECODED: Decode even reserved %<!-- -->encoded
+ *     characters in the URI (unless this would result in non-UTF8
+ *     strings). Using this flag means that you cannot reliably
+ *     convert the parsed URI back to string form with
+ *     g_uri_to_string().
+ * @G_URI_PARSE_UTF8_ONLY: Return an error if non-UTF8 characters are
+ *     encountered in the URI.
+ *
+ * Flags that control how a URI string is parsed (or re-parsed).
+ *
+ * Since: 2.28
+ */
+
 #define XDIGIT(c) ((c) <= '9' ? (c) - '0' : ((c) & 0x4F) - 'A' + 10)
 #define HEXCHAR(s) ((XDIGIT (s[1]) << 4) + XDIGIT (s[2]))
 
@@ -98,6 +125,7 @@ static gchar *
 uri_decoder (const gchar     *part,
              gboolean         just_normalize,
              GUriParseFlags   flags,
+             GUriError        parse_error,
              GError         **error)
 {
   gchar *decoded;
@@ -118,7 +146,7 @@ uri_decoder (const gchar     *part,
               /* % followed by non-hex; this is an error */
               if (flags & G_URI_PARSE_STRICT)
                 {
-                  g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+                  g_set_error_literal (error, G_URI_ERROR, parse_error,
                                        _("Invalid %-encoding in URI"));
                   g_free (decoded);
                   return FALSE;
@@ -156,7 +184,7 @@ uri_decoder (const gchar     *part,
 
       if (flags & G_URI_PARSE_UTF8_ONLY)
         {
-          g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+          g_set_error_literal (error, G_URI_ERROR, parse_error,
                                _("Non-UTF8 characters in URI"));
           g_free (decoded);
           return FALSE;
@@ -184,17 +212,19 @@ uri_decoder (const gchar     *part,
 static gchar *
 uri_decode (const gchar     *part,
             GUriParseFlags   flags,
+            GUriError        parse_error,
             GError         **error)
 {
-  return uri_decoder (part, FALSE, flags, error);
+  return uri_decoder (part, FALSE, flags, parse_error, error);
 }
 
 static gchar *
 uri_normalize (const gchar     *part,
                GUriParseFlags   flags,
+               GUriError        parse_error,
                GError         **error)
 {
-  return uri_decoder (part, TRUE, flags, error);
+  return uri_decoder (part, TRUE, flags, parse_error, error);
 }
 
 /* Does the "Remove Dot Segments" algorithm from section 5.2.4 of RFC
@@ -301,7 +331,7 @@ parse_host (const gchar     *raw_host,
 
       if (raw_host[len - 1] != ']')
 	{
-	  g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+	  g_set_error (error, G_URI_ERROR, G_URI_ERROR_BAD_HOST,
 		       _("Invalid IP literal '%s' in URI"),
 		       raw_host);
 	  return FALSE;
@@ -312,7 +342,7 @@ parse_host (const gchar     *raw_host,
       if (!g_hostname_is_ip_address (addr) || !strchr (addr, ':'))
 	{
 	  g_free (addr);
-	  g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+	  g_set_error (error, G_URI_ERROR, G_URI_ERROR_BAD_HOST,
 		       _("Invalid IP literal '%s' in URI"),
 		       raw_host);
 	  return FALSE;
@@ -328,9 +358,17 @@ parse_host (const gchar     *raw_host,
       return TRUE;
     }
 
-  decoded = uri_decode (raw_host, G_URI_PARSE_STRICT, error);
+  decoded = uri_decode (raw_host,
+                        (flags & G_URI_PARSE_NON_DNS) ? flags : G_URI_PARSE_STRICT,
+                        G_URI_ERROR_BAD_HOST, error);
   if (!decoded)
     return FALSE;
+
+  if (flags & G_URI_PARSE_NON_DNS)
+    {
+      *host = decoded;
+      return TRUE;
+    }
 
   /* You're not allowed to %-encode an IP address, so if it wasn't
    * one before, it better not be one now.
@@ -338,22 +376,16 @@ parse_host (const gchar     *raw_host,
   if (g_hostname_is_ip_address (decoded))
     {
       g_free (decoded);
-      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+      g_set_error (error, G_URI_ERROR, G_URI_ERROR_BAD_HOST,
 		   _("Invalid encoded IP literal '%s' in URI"),
 		   raw_host);
       return FALSE;
     }
 
-  if (!(flags & G_URI_PARSE_DNS))
-    {
-      *host = decoded;
-      return TRUE;
-    }
-
   if (strchr (decoded, '%') || !g_utf8_validate (decoded, -1, NULL))
     {
       g_free (decoded);
-      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+      g_set_error (error, G_URI_ERROR, G_URI_ERROR_BAD_HOST,
 		   _("Invalid non-ASCII hostname '%s' in URI"),
 		   raw_host);
       return FALSE;
@@ -368,7 +400,7 @@ parse_host (const gchar     *raw_host,
   if (flags & G_URI_PARSE_NO_IRI)
     {
       g_free (decoded);
-      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+      g_set_error (error, G_URI_ERROR, G_URI_ERROR_BAD_HOST,
 		   _("Non-ASCII hostname '%s' forbidden in this URI"),
 		   decoded);
       return FALSE;
@@ -390,14 +422,14 @@ parse_port (const gchar  *raw_port,
   parsed_port = strtoul (raw_port, &end, 10);
   if (*end)
     {
-      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+      g_set_error (error, G_URI_ERROR, G_URI_ERROR_BAD_PORT,
                    _("Could not parse port '%s' in URI"),
                    raw_port);
       return FALSE;
     }
   else if (parsed_port > 65535)
     {
-      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+      g_set_error (error, G_URI_ERROR, G_URI_ERROR_BAD_PORT,
                    _("Port '%s' in URI is out of range"),
                    raw_port);
       return FALSE;
@@ -430,7 +462,7 @@ parse_userinfo (const gchar     *raw_userinfo,
     end = start + strlen (start);
   raw_user = g_strndup (start, end - start);
 
-  *user = uri_decode (raw_user, flags, error);
+  *user = uri_decode (raw_user, flags, G_URI_ERROR_BAD_USER, error);
   g_free (raw_user);
   if (!*user)
     return FALSE;
@@ -444,7 +476,7 @@ parse_userinfo (const gchar     *raw_userinfo,
         end = start + strlen (start);
       raw_password = g_strndup (start, end - start);
 
-      *password = uri_decode (raw_password, flags, error);
+      *password = uri_decode (raw_password, flags, G_URI_ERROR_BAD_PASSWORD, error);
       g_free (raw_password);
       if (!*password)
         {
@@ -462,7 +494,7 @@ parse_userinfo (const gchar     *raw_userinfo,
       end = start + strlen (start);
       raw_params = g_strndup (start, end - start);
 
-      *auth_params = uri_decode (raw_params, flags, error);
+      *auth_params = uri_decode (raw_params, flags, G_URI_ERROR_BAD_AUTH_PARAMS, error);
       g_free (raw_params);
       if (!*auth_params)
         {
@@ -522,11 +554,12 @@ g_uri_new_relative (GUri            *base_uri,
 		    GError         **error)
 {
   GUri *raw = NULL, *uri = NULL;
+  gchar *cleaned_uri_string = NULL;
   gchar *raw_port = NULL;
 
   if (base_uri && !base_uri->scheme)
     {
-      g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+      g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_MISC,
 			   _("Base URI is not absolute"));
       return NULL;
     }
@@ -534,21 +567,24 @@ g_uri_new_relative (GUri            *base_uri,
   uri = g_slice_new0 (GUri);
 
   if (!(flags & G_URI_PARSE_STRICT) && strpbrk (uri_string, " \t\n\r"))
-    uri->uri_string = uri_cleanup (uri_string);
-  else
-    uri->uri_string = g_strdup (uri_string);
+    {
+      cleaned_uri_string = uri_cleanup (uri_string);
+      uri_string = cleaned_uri_string;
+    }
 
   /* We use another GUri to store the raw data in, for convenience */
   raw = g_slice_new0 (GUri);
-  g_uri_split (uri->uri_string, (flags & G_URI_PARSE_STRICT) != 0,
+  g_uri_split (uri_string, (flags & G_URI_PARSE_STRICT) != 0,
 	       &raw->scheme, &raw->user, &raw->host, &raw_port,
 	       &raw->path, &raw->query, &raw->fragment);
+  if (cleaned_uri_string)
+    g_free (cleaned_uri_string);
 
   if (raw->scheme)
     uri->scheme = g_ascii_strdown (raw->scheme, -1);
   else if (!base_uri)
     {
-      g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+      g_set_error_literal (error, G_URI_ERROR, G_URI_ERROR_MISC,
 			   _("URI is not absolute, and no base URI was provided"));
       goto fail;
     }
@@ -573,27 +609,27 @@ g_uri_new_relative (GUri            *base_uri,
         goto fail;
     }
 
-  uri->path = uri_normalize (raw->path, flags, error);
+  uri->path = uri_normalize (raw->path, flags, G_URI_ERROR_BAD_PATH, error);
   if (!uri->path)
     goto fail;
 
   if (raw->query)
     {
-      uri->query = uri_normalize (raw->query, flags, error);
+      uri->query = uri_normalize (raw->query, flags, G_URI_ERROR_BAD_QUERY, error);
       if (!uri->query)
 	goto fail;
     }
 
   if (raw->fragment)
     {
-      uri->fragment = uri_normalize (raw->fragment, flags, error);
+      uri->fragment = uri_normalize (raw->fragment, flags, G_URI_ERROR_BAD_FRAGMENT, error);
       if (!uri->fragment)
 	goto fail;
     }
 
   if (!uri->scheme && !base_uri)
     {
-      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+      g_set_error (error, G_URI_ERROR, G_URI_ERROR_MISC,
 		   _("Could not parse '%s' as absolute URI"),
 		   uri_string);
       goto fail;
@@ -667,31 +703,6 @@ g_uri_new_relative (GUri            *base_uri,
   g_free (raw_port);
   g_uri_free (uri);
   return NULL;
-}
-
-/**
- * g_uri_reparse:
- * @uri: a #GUri
- * @flags: flags describing how to reparse @uri
- * @error: #GError for error reporting, or %NULL to ignore.
- *
- * Reparses @uri according to @flags. In particular, you may wish to
- * reparse with a different setting for %G_URI_PARSE_DNS,
- * %G_URI_PARSE_PASSWORD, or %G_URI_PARSE_AUTH_PARAMS, to change how those
- * fields are interpreted.
- *
- * Return value: %TRUE if @uri was successfully reparsed with the
- * new flags, %FALSE if the reparsing failed (in which case @uri will
- * be unchanged).
- *
- * Since: 2.28
- */
-gboolean
-g_uri_reparse (GUri            *uri,
-               GUriParseFlags   flags,
-               GError         **error)
-{
-  // FIXME
 }
 
 /**
@@ -777,9 +788,6 @@ g_uri_copy (GUri *uri)
   dup->query       = g_strdup (uri->query);
   dup->fragment    = g_strdup (uri->fragment);
 
-  dup->flags       = uri->flags;
-  dup->uri_string  = g_strdup (uri->uri_string);
-
   return dup;
 }
 
@@ -804,7 +812,6 @@ g_uri_free (GUri *uri)
   g_free (uri->path);
   g_free (uri->query);
   g_free (uri->fragment);
-  g_free (uri->uri_string);
 
   g_slice_free (GUri, uri);
 }
@@ -845,9 +852,8 @@ g_uri_split (const gchar  *uri_string,
              gchar       **query,
              gchar       **fragment)
 {
-  const gchar *end, *colon, *at, *path, *semi, *question;
+  const gchar *end, *colon, *at, *path_start, *semi, *question;
   const gchar *p, *bracket, *hostend;
-  int len;
 
   if (scheme)
     *scheme = NULL;
@@ -856,7 +862,7 @@ g_uri_split (const gchar  *uri_string,
   if (host)
     *host = NULL;
   if (port)
-    *port = -1;
+    *port = NULL;
   if (path)
     *path = NULL;
   if (query)
@@ -884,8 +890,8 @@ g_uri_split (const gchar  *uri_string,
     {
       p += 2;
 
-      path = p + strcspn (p, "/?#");
-      at = memchr (p, '@', path - p);
+      path_start = p + strcspn (p, "/?#");
+      at = memchr (p, '@', path_start - p);
       if (at)
 	{
           if (!strict)
@@ -900,7 +906,7 @@ g_uri_split (const gchar  *uri_string,
                */
               do
                 {
-                  next_at = memchr (at + 1, '@', path - (at + 1));
+                  next_at = memchr (at + 1, '@', path_start - (at + 1));
                   if (next_at)
                     at = next_at;
                 }
@@ -915,7 +921,7 @@ g_uri_split (const gchar  *uri_string,
       if (!strict)
         {
           semi = strchr (p, ';');
-          if (semi && semi < path)
+          if (semi && semi < path_start)
             {
               /* Technically, semicolons are allowed in the "host"
                * production, but no one ever does this, and some
@@ -925,7 +931,7 @@ g_uri_split (const gchar  *uri_string,
                * semicolon before the "@" must be part of the
                * userinfo.
                */
-              path = semi;
+              path_start = semi;
             }
         }
 
@@ -935,25 +941,25 @@ g_uri_split (const gchar  *uri_string,
        */
       if (*p == '[')
         {
-          bracket = memchr (p, ']', path - p);
+          bracket = memchr (p, ']', path_start - p);
           if (bracket && *(bracket + 1) == ':')
             colon = bracket + 1;
           else
             colon = NULL;
 	}
       else
-        colon = memchr (p, ':', path - p);
+        colon = memchr (p, ':', path_start - p);
 
       if (host)
         {
-	  hostend = colon ? colon : path;
+	  hostend = colon ? colon : path_start;
           *host = g_strndup (p, hostend - p);
         }
 
-      if (colon && colon != path - 1 && port)
-        *port = g_strndup (colon + 1, path - (colon + 1));
+      if (colon && colon != path_start - 1 && port)
+        *port = g_strndup (colon + 1, path_start - (colon + 1));
 
-      p = path;
+      p = path_start;
     }
 
   /* Find fragment. */
@@ -1038,8 +1044,8 @@ g_uri_parse_params (const gchar     *params,
 		    gboolean         case_insensitive)
 {
   GHashTable *hash;
-  const char *end, attr, *attr_end, *value, *value_end;
-  char *decoded_attr, *decoded_value;
+  const char *end, *attr, *attr_end, *value, *value_end;
+  char *copy, *decoded_attr, *decoded_value;
 
   if (case_insensitive)
     {
@@ -1071,7 +1077,9 @@ g_uri_parse_params (const gchar     *params,
 	  g_hash_table_destroy (hash);
 	  return NULL;
 	}
-      decoded_attr = uri_decode (attr, attr_end - attr, 0, NULL);
+      copy = g_strndup (attr, attr_end - attr);
+      decoded_attr = uri_decode (copy, 0, G_URI_ERROR_MISC, NULL);
+      g_free (copy);
       if (!decoded_attr)
         {
 	  g_hash_table_destroy (hash);
@@ -1079,7 +1087,9 @@ g_uri_parse_params (const gchar     *params,
 	}
 
       value = attr_end + 1;
-      decoded_value = uri_decode (value, value_end - value, 0, NULL);
+      copy = g_strndup (value, value_end - value);
+      decoded_value = uri_decode (copy, 0, G_URI_ERROR_MISC, NULL);
+      g_free (copy);
       if (!decoded_value)
         {
           g_free (decoded_attr);
@@ -1119,11 +1129,12 @@ g_uri_parse_host (const gchar     *uri_string,
 {
   gchar *raw_scheme, *raw_host, *raw_port;
 
-  g_uri_split (uri_string, &raw_scheme, NULL, &raw_host, &raw_port,
+  g_uri_split (uri_string, flags & G_URI_PARSE_STRICT,
+               &raw_scheme, NULL, &raw_host, &raw_port,
                NULL, NULL, NULL);
   if (!raw_host)
     {
-      g_set_error (error, G_URI_ERROR, G_URI_ERROR_PARSE,
+      g_set_error (error, G_URI_ERROR, G_URI_ERROR_BAD_HOST,
 		   _("URI '%s' has no host component"),
 		   uri_string);
       goto fail;
@@ -1137,8 +1148,7 @@ g_uri_parse_host (const gchar     *uri_string,
   else
     *port = 0;
 
-  *host = parse_host (raw_host, flags, error);
-  if (!*host)
+  if (!parse_host (raw_host, flags, host, error))
     goto fail;
 
   *scheme = raw_scheme;
@@ -1187,52 +1197,13 @@ g_uri_set_scheme (GUri        *uri,
 }
 
 /**
- * g_uri_get_encoded_userinfo:
- * @uri: a #GUri
- *
- * Gets @uri's userinfo, still %<!-- -->-encoded. See also
- * g_uri_get_user(), g_uri_get_password(), and g_uri_get_auth_params().
- *
- * Return value: @uri's %<!-- -->-encoded userinfo.
- *
- * Since: 2.28
- */
-const gchar *
-g_uri_get_encoded_userinfo (GUri *uri)
-{
-  return uri->encoded_userinfo;
-}
-
-/**
- * g_uri_set_encoded_userinfo:
- * @uri: a #GUri
- * @userinfo: the %<!-- -->-encoded userinfo, or %NULL
- *
- * Sets @uri's userinfo to @userinfo. This will also change its user
- * value, and if @uri was parsed with %G_URI_PARSE_PASSWORD or
- * %G_URI_PARSE_AUTH_PARAMS, it will also change its password and auth
- * params.
- *
- * Since: 2.28
- */
-void
-g_uri_set_encoded_userinfo (GUri        *uri,
-                            const gchar *userinfo)
-{
-  g_free (uri->encoded_userinfo);
-  uri->encoded_userinfo = g_strdup (userinfo);
-  reparse_userinfo (uri);
-}
-
-/**
  * g_uri_get_user:
  * @uri: a #GUri
  *
  * Gets @uri's user. If @uri was parsed with %G_URI_PARSE_PASSWORD or
  * %G_URI_PARSE_AUTH_PARAMS, this is the string that appears before the
  * password and parameters in the userinfo. If not, then the entire
- * userinfo is considered the user. In either case, unlike userinfo,
- * this value will be %<!-- -->-decoded.
+ * userinfo is considered the user.
  *
  * Return value: @uri's user.
  *
@@ -1260,7 +1231,6 @@ g_uri_set_user (GUri        *uri,
 {
   g_free (uri->user);
   uri->user = g_strdup (user);
-  reset_userinfo (uri);
 }
 
 /**
@@ -1285,9 +1255,7 @@ g_uri_get_password (GUri *uri)
  * @uri: a #GUri
  * @password: the password, or %NULL
  *
- * Sets @uri's password to @password. If @uri had not previously been
- * parsed with %G_URI_PARSE_PASSWORD, this will set that flag, which may
- * cause the interpretation of the other userinfo fields to change.
+ * Sets @uri's password to @password.
  *
  * Since: 2.28
  */
@@ -1295,24 +1263,17 @@ void
 g_uri_set_password (GUri        *uri,
                     const gchar *password)
 {
-  if (!(uri->flags & G_URI_PARSE_PASSWORD))
-    {
-      uri->flags |= G_URI_PARSE_PASSWORD;
-      reparse_userinfo (uri);
-    }
-
   g_free (uri->password);
   uri->password = g_strdup (password);
-
-  reset_userinfo (uri);
 }
 
 /**
  * g_uri_get_auth_params:
  * @uri: a #GUri
  *
- * Gets @uri's authentication parametsr. If @uri was not parsed with
- * %G_URI_PARSE_AUTH_PARAMS, this will always be %NULL.
+ * Gets @uri's authentication parameters. Depending on the URI scheme,
+ * g_uri_parse_params() may be useful for further parsing this
+ * information.
  *
  * Return value: @uri's authentication parameters.
  *
@@ -1329,10 +1290,7 @@ g_uri_get_auth_params (GUri *uri)
  * @uri: a #GUri
  * @auth_params: the authentication parameters, or %NULL
  *
- * Sets @uri's authentication parameters to @auth_params. If @uri had
- * not previously been parsed with %G_URI_PARSE_AUTH_PARAMS, this will
- * set that flag, which may cause the interpretation of the other
- * userinfo fields to change.
+ * Sets @uri's authentication parameters to @auth_params.
  *
  * Since: 2.28
  */
@@ -1340,23 +1298,17 @@ void
 g_uri_set_auth_params (GUri        *uri,
                        const gchar *auth_params)
 {
-  if (!(uri->flags & G_URI_PARSE_AUTH_PARAMS))
-    {
-      uri->flags |= G_URI_PARSE_AUTH_PARAMS;
-      reparse_userinfo (uri);
-    }
-
   g_free (uri->auth_params);
   uri->auth_params = g_strdup (auth_params);
-
-  reset_userinfo (uri);
 }
 
 /**
  * g_uri_get_host:
  * @uri: a #GUri
  *
- * Gets @uri's host.
+ * Gets @uri's host. If @uri contained an IPv6 address literal, this
+ * value will not include the brackets that are required by the URI
+ * syntax.
  *
  * Return value: @uri's host.
  *
@@ -1378,12 +1330,7 @@ g_uri_get_host (GUri *uri)
  * If @host is an IPv6 IP address, it should not include the brackets
  * required by the URI syntax; they will be added automatically when
  * converting @uri to a string.
- *
- * As with other methods such as g_uri_set_path(), @host is assumed to
- * be properly %<!-- -->-encoded, but this is usually irrelevant,
- * since DNS hostnames can't contain any characters that need to be
- * encoded anyway.
- *
+
  * Since: 2.28
  */
 void
@@ -1404,7 +1351,7 @@ g_uri_set_host (GUri        *uri,
  *
  * Since: 2.28
  */
-guint
+gushort
 g_uri_get_port (GUri *uri)
 {
   return uri->port;
@@ -1421,17 +1368,18 @@ g_uri_get_port (GUri *uri)
  * Since: 2.28
  */
 void
-g_uri_set_port (GUri  *uri,
-                guint  port)
+g_uri_set_port (GUri    *uri,
+                gushort  port)
 {
   uri->port = port;
 }
 
 /**
- * g_uri_get_encoded_path:
+ * g_uri_get_path:
  * @uri: a #GUri
  *
- * Gets @uri's path, which may contain %<!-- -->-encoding.
+ * Gets @uri's path, which may contain %<!-- -->-encoding, depending
+ * on the flags with which @uri was parsed.
  *
  * Return value: @uri's path.
  *
@@ -1449,12 +1397,12 @@ g_uri_get_path (GUri *uri)
  * @path: the (%<!-- -->-encoded) path
  *
  * Sets @uri's path to @path, which is assumed to have been
- * %<!-- -->-encoded. In particular, this means that if you want to
- * include a literal percent sign the path, you must write it as
- * "%<!-- -->25". That being said, if @path contains an unencoded '?'
- * or '#' character, it will get encoded, since otherwise converting
- * @uri to a string and then back to a #GUri again would give a
- * different result.
+ * appropriately %<!-- -->-encoded. In particular, this means that if
+ * you want to include a literal percent sign the path, you must write
+ * it as "%<!-- -->25". That being said, if @path contains an
+ * unencoded '?' or '#' character, it will get encoded, since
+ * otherwise converting @uri to a string and then back to a #GUri
+ * again would give a different result.
  *
  * Since: 2.28
  */
@@ -1470,7 +1418,11 @@ g_uri_set_path (GUri        *uri,
  * g_uri_get_query:
  * @uri: a #GUri
  *
- * Gets @uri's query, which may contain %<!-- -->-encoding.
+ * Gets @uri's query, which may contain %<!-- -->-encoding, depending
+ * on the flags with which @uri was parsed.
+ *
+ * For queries consisting of a series of "name=value" parameters,
+ * g_uri_parse_params() may be useful.
  *
  * Return value: @uri's query.
  *
@@ -1505,7 +1457,8 @@ g_uri_set_query (GUri        *uri,
  * g_uri_get_fragment:
  * @uri: a #GUri
  *
- * Gets @uri's fragment (which may contain %<!-- -->-encoding).
+ * Gets @uri's fragment, which may contain %<!-- -->-encoding,
+ * depending on the flags with which @uri was parsed.
  *
  * Return value: @uri's fragment.
  *

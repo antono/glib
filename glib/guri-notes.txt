@@ -202,3 +202,19 @@ http://blogs.msdn.com/ie/archive/2006/12/06/file-uris-in-windows.aspx:
     (http://en.wikipedia.org/wiki/File_URI_scheme contradicts this?)
   IE allows "|" instead of ":" for drive separator, but very deprecated
   MUST NOT use %-encoding where not required
+
+Bug 489862 - Basic URI operations
+https://bugzilla.gnome.org/show_bug.cgi?id=489862
+
+Bug 620417 - g_uri_unescape_string cannot unescape %00
+https://bugzilla.gnome.org/show_bug.cgi?id=620417
+
+Bug 611687 - gconvert g_filename_to_uri doesn't do what the documentation says
+https://bugzilla.gnome.org/show_bug.cgi?id=611687
+
+Bug 550110 - RFC: g_uri_is_valid (from GStreamer gst_uri_is_valid)
+https://bugzilla.gnome.org/show_bug.cgi?id=550110
+
+Add fireball URI matcher
+(make sure it does email addresses too)
+

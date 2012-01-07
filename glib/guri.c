@@ -160,17 +160,17 @@ uri_decoder (const gchar     *part,
               continue;
             }
 
-          c = HEXCHAR (s);
-          if (just_normalize && !g_uri_char_is_unreserved (c))
-            {
-              /* Leave the % sequence there. */
-              *d++ = *s;
-            }
-          else
-            {
-              *d++ = c;
-              s += 2;
-            }
+          /* c = HEXCHAR (s); */
+          /* if (just_normalize && !g_uri_char_is_unreserved (c)) */
+          /*   { */
+          /*     /\* Leave the % sequence there. *\/ */
+          /*     *d++ = *s; */
+          /*   } */
+          /* else */
+          /*   { */
+          /*     *d++ = c; */
+          /*     s += 2; */
+          /*   } */
         }
       else
         *d++ = *s;
@@ -736,8 +736,8 @@ g_uri_to_string (GUri              *uri,
 	  g_string_append_c (str, '@');
 	}
 
-      if (raw_host)
-	g_string_append (str, uri->encoded_host);
+      if (uri->host)
+         g_string_append (str, uri->host);
 
       if (uri->port)
 	g_string_append_printf (str, ":%d", uri->port);
@@ -1487,4 +1487,10 @@ g_uri_set_fragment (GUri        *uri,
 {
   g_free (uri->fragment);
   uri->fragment = g_strdup (fragment);
+}
+
+GQuark
+g_uri_error_quark (void)
+{
+  return g_quark_from_static_string ("g-uri-error-quark");
 }

@@ -44,6 +44,12 @@ struct _GUri {
   gchar   *path;
   gchar   *query;
   gchar   *fragment;
+  
+  gchar   *encoded_userinfo;
+  gchar   *encoded_host;
+  gchar   *encoded_path;
+  gchar   *encoded_query;
+  gchar   *encoded_fragment;
 };
 
 typedef enum {
@@ -150,7 +156,6 @@ gchar *      g_uri_build           (const gchar        *scheme,
  * domains.
  */
 #define G_URI_ERROR (g_uri_error_quark ())
-GQuark g_uri_error_quark (void);
 
 /**
  * GUriError:
@@ -171,6 +176,8 @@ typedef enum
   G_URI_ERROR_BAD_QUERY,
   G_URI_ERROR_BAD_FRAGMENT
 } GUriError;
+
+GQuark g_uri_error_quark (void);
 
 G_END_DECLS
 

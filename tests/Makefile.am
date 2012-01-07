@@ -64,7 +64,8 @@ noinst_PROGRAMS = $(TEST_PROGS)	\
 	unicode-collate 	\
 	$(timeloop) 		\
 	assert-msg-test		\
-	datetime
+	datetime		\
+	guri
 
 TEST_PROGS		+= testglib
 testglib_SOURCES         = testglib.c
@@ -81,6 +82,7 @@ timeloop_LDADD = $(libglib)
 timeloop_closure_LDADD = $(libglib) $(libgobject)
 endif
 datetime_LDADD = $(libglib)
+guri_LDADD = $(libglib)
 
 test_programs =					\
 	atomic-test				\
